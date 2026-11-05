@@ -19,7 +19,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: mbstring, xml, ctype, iconv, intl, pdo, pdo_mysql, bcmath, fileinfo
+          extensions: mbstring, xml, ctype, iconv, intl, pdo, pdo_mysql, bcmath, fileinfo, zip
           coverage: none
 
       - name: ⚙️ Setup Node.js
@@ -36,43 +36,85 @@ jobs:
           npm ci || npm install
           npm run build
 
-      - name: 📂 Prepare Public Directory for cPanel
+      - name: 📦 Package App into ZIP
         run: |
-          mkdir -p deploy_public
-          cp -r public/* deploy_public/
-          # Sesuaikan path di index.php agar mengarah ke folder ../ukk_rapi
-          sed -i "s|__DIR__.'/../storage|__DIR__.'/../ukk_rapi/storage|g" deploy_public/index.php
-          sed -i "s|__DIR__.'/../vendor|__DIR__.'/../ukk_rapi/vendor|g" deploy_public/index.php
-          sed -i "s|__DIR__.'/../bootstrap|__DIR__.'/../ukk_rapi/bootstrap|g" deploy_public/index.php
+          mkdir -p deploy_package/ukk_rapi
+          mkdir -p deploy_package/public_html
 
-      - name: 🚀 Deploy Core App to cPanel (ukk_rapi)
+          # Copy core files ke ukk_rapi (kecuali node_modules, git, env, dll)
+          rsync -av --exclude='node_modules' \
+                    --exclude='.git' \
+                    --exclude='.github' \
+                    --exclude='public' \
+                    --exclude='.env*' \
+                    --exclude='tests' \
+                    --exclude='*.sql' \
+                    --exclude='*.zip' \
+                    ./ deploy_package/ukk_rapi/
+
+          # Copy public files ke public_html
+          cp -r public/* deploy_package/public_html/
+
+          # Sesuaikan path di index.php
+          sed -i "s|__DIR__.'/../storage|__DIR__.'/../ukk_rapi/storage|g" deploy_package/public_html/index.php
+          sed -i "s|__DIR__.'/../vendor|__DIR__.'/../ukk_rapi/vendor|g" deploy_package/public_html/index.php
+          sed -i "s|__DIR__.'/../bootstrap|__DIR__.'/../ukk_rapi/bootstrap|g" deploy_package/public_html/index.php
+
+          # Buat script PHP untuk extract otomatis di cPanel
+          cat << 'EOF' > deploy_package/public_html/auto_extract.php
+          <?php
+          if (!isset($_GET['token']) || $_GET['token'] !== 'deploy_ukk_rapi_2026') {
+              http_response_code(403);
+              die('Access Denied');
+          }
+
+          $zipFile = __DIR__ . '/deploy_payload.zip';
+          if (!file_exists($zipFile)) {
+              die('Payload not found');
+          }
+
+          $zip = new ZipArchive;
+          if ($zip->open($zipFile) === TRUE) {
+              $extractPath = realpath(__DIR__ . '/..');
+              $zip->extractTo($extractPath);
+              $zip->close();
+              @unlink($zipFile);
+              @unlink(__FILE__);
+              echo "DEPLOY_SUCCESS";
+          } else {
+              http_response_code(500);
+              echo "EXTRACT_FAILED";
+          }
+          EOF
+
+          # Compress menjadi 1 file payload .zip
+          cd deploy_package
+          zip -rq ../deploy_payload.zip ukk_rapi public_html
+          cd ..
+
+          # Siapkan folder upload FTP (HANYA 2 file: 1 zip + 1 php)
+          mkdir -p ftp_upload
+          mv deploy_package/public_html/auto_extract.php ftp_upload/
+          mv deploy_payload.zip ftp_upload/
+
+      - name: 🚀 Upload ZIP to cPanel via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftp
-          server-dir: ukk_rapi/
-          exclude: |
-            **/.git*
-            **/.git*/**
-            **/.github*
-            **/.github*/**
-            **/node_modules/**
-            **/.env*
-            **/public/**
-            **/deploy_public/**
-            **/tests/**
-            **/*.sql
-            **/*.zip
-
-      - name: 🚀 Deploy Public Assets to cPanel (public_html)
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftp
-          local-dir: ./deploy_public/
+          local-dir: ./ftp_upload/
           server-dir: public_html/
+
+      - name: ⚡ Trigger Auto-Extract on cPanel
+        run: |
+          echo "Extracting payload on server..."
+          RESPONSE=$(curl -k -L -s "http://ahmad-rapi.web.id/auto_extract.php?token=deploy_ukk_rapi_2026")
+          echo "Server Response: $RESPONSE"
+          if [[ "$RESPONSE" == *"DEPLOY_SUCCESS"* ]]; then
+            echo "🎉 Deployment successfully extracted and completed!"
+          else
+            echo "Output: $RESPONSE"
+          fi
 
