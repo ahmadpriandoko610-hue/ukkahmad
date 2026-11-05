@@ -52,13 +52,14 @@ jobs:
                     --exclude='*.zip' \
                     ./ deploy_package/ukk_rapi/
 
-          # Copy public files ke public_html
-          cp -r public/* deploy_package/public_html/
+          # Copy public files ke public_html (termasuk file hidden .htaccess)
+          cp -a public/. deploy_package/public_html/
 
           # Sesuaikan path di index.php
           sed -i "s|__DIR__.'/../storage|__DIR__.'/../ukk_rapi/storage|g" deploy_package/public_html/index.php
           sed -i "s|__DIR__.'/../vendor|__DIR__.'/../ukk_rapi/vendor|g" deploy_package/public_html/index.php
           sed -i "s|__DIR__.'/../bootstrap|__DIR__.'/../ukk_rapi/bootstrap|g" deploy_package/public_html/index.php
+          sed -i "s|\$app = require_once __DIR__.'/../ukk_rapi/bootstrap/app.php';|\$app = require_once __DIR__.'/../ukk_rapi/bootstrap/app.php';\n\$app->usePublicPath(__DIR__);|g" deploy_package/public_html/index.php
 
           # Buat script PHP untuk extract otomatis di cPanel
           cat << 'EOF' > deploy_package/public_html/auto_extract.php
