@@ -1,0 +1,68 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class DashboardAppearanceTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_admin_dashboard_renders_successfully(): void
+    {
+        $admin = User::factory()->create([
+            'role' => 'admin',
+            'name' => 'Pak Administrator',
+        ]);
+
+        $response = $this->actingAs($admin)->get('/dashboard/admin');
+
+        $response->assertOk();
+        $response->assertSee('Selamat Datang, Pak Administrator');
+        $response->assertSee('Total Pengguna');
+        $response->assertSee('Ruangan Terdaftar');
+        $response->assertDontSee('Ruang Kosong');
+        $response->assertSee('Agenda Aktif');
+        $response->assertSee('Pengaduan Kerusakan');
+    }
+
+    public function test_guru_dashboard_renders_successfully(): void
+    {
+        $guru = User::factory()->create([
+            'role' => 'guru',
+            'name' => 'Ibu Guru Ani',
+        ]);
+
+        $response = $this->actingAs($guru)->get('/dashboard/guru');
+
+        $response->assertOk();
+        $response->assertSee('Selamat Datang, Ibu Guru Ani');
+        $response->assertDontSee('Portal Guru');
+        $response->assertDontSee('Aksi Cepat Guru & Organisasi');
+        $response->assertSee('Agenda Saya');
+        $response->assertSee('Disetujui PIC');
+        $response->assertSee('Alur & Tata Tertib Peminjaman Ruangan', false);
+    }
+
+    public function test_pic_dashboard_renders_successfully(): void
+    {
+        $pic = User::factory()->create([
+            'role' => 'pic',
+            'name' => 'Bapak PIC Sarpras',
+        ]);
+
+        $response = $this->actingAs($pic)->get('/dashboard/pic');
+
+        $response->assertOk();
+        $response->assertSee('Selamat Datang, Bapak PIC Sarpras');
+        $response->assertDontSee('Panel PIC Ruang');
+        $response->assertDontSee('Aksi Cepat PIC Ruangan');
+        $response->assertDontSee('Agenda Menunggu Verifikasi');
+        $response->assertDontSee('Pengaduan Kerusakan di Ruangan Anda');
+        $response->assertSee('Agenda Menunggu');
+        $response->assertSee('Agenda Disetujui');
+        $response->assertSee('Ruangan Tanggung Jawab Saya');
+    }
+}
