@@ -2668,7 +2668,7 @@ jobs:
           cp deploy_package/public_html/auto_extract.php ftp_stage2_payload/
           mv deploy_payload.zip ftp_stage2_payload/.deploy_staging/
 
-      - name: 🛡️ Stage 1: Upload Protection Shield via FTP
+      - name: "🛡️ Stage 1: Upload Protection Shield via FTP"
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
@@ -2678,7 +2678,7 @@ jobs:
           local-dir: ./ftp_stage1_shield/
           server-dir: public_html/
 
-      - name: 🔍 Verify Staging Shield Active (HTTP 403 on Probe File)
+      - name: "🔍 Verify Staging Shield Active (HTTP 403 on Probe File)"
         run: |
           PROBE_URL="https://ahmad-rapi.web.id/.deploy_staging/${PROBE_FILENAME}"
           echo "Memverifikasi proteksi HTTP staging melalui berkas probe spesifik: ${PROBE_URL}"
@@ -2706,7 +2706,7 @@ jobs:
 
           echo "✅ Proteksi shield .deploy_staging terverifikasi aktif (HTTP 403 Forbidden pada akses berkas langsung)."
 
-      - name: 📦 Stage 2: Upload Payload ZIP via FTP
+      - name: "📦 Stage 2: Upload Payload ZIP via FTP"
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
@@ -2716,7 +2716,7 @@ jobs:
           local-dir: ./ftp_stage2_payload/
           server-dir: public_html/
 
-      - name: ⚡ Stage 3: Trigger Secure Extraction on cPanel
+      - name: "⚡ Stage 3: Trigger Secure Extraction on cPanel"
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
         run: |
