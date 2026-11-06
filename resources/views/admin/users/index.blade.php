@@ -43,7 +43,7 @@
     <a href="{{ route('users.import.form') }}"
        class="btn-login"
        style="display:inline-flex; align-items:center; gap:8px; width:auto; padding:10px 20px; text-decoration:none; background:#059669; border-color:#059669;">
-        📊 Import Pengguna Excel
+        Import Pengguna Excel
     </a>
 </div>
 

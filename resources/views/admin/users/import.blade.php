@@ -93,7 +93,7 @@
         <div style="background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 22px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid #f1f5f9; padding-bottom: 12px;">
                 <h3 style="font-size: 1.15rem; font-weight: 700; color: #0f172a; margin: 0; display: flex; align-items: center; gap: 8px;">
-                    📋 Ringkasan Hasil Eksekusi Import
+                    Ringkasan Hasil Eksekusi Import
                 </h3>
                 <span style="font-size: 0.85rem; color: #64748b;">Baru saja selesai diproses</span>
             </div>
@@ -115,7 +115,7 @@
 
             {{-- Informasi Keamanan Password Sementara --}}
             <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; color: #1e40af; font-size: 0.9rem; line-height: 1.5;">
-                <strong>🔐 Informasi Akses Akun Baru:</strong>
+                <strong>Informasi Akses Akun Baru:</strong>
                 <p style="margin: 4px 0 0 0;">
                     Akun pengguna yang berhasil ditambahkan diberikan <em>password sementara unik</em> dengan format:
                     <code style="background: #dbeafe; padding: 2px 6px; border-radius: 4px; font-weight: 600;">[PrefixEmail]@Rapi{{ date('Y') }}</code>
@@ -194,7 +194,7 @@
                     </div>
 
                     <div id="fileInfo" style="display: none; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 6px 14px; border-radius: 20px; font-size: 0.875rem; font-weight: 600;">
-                        📄 <span id="fileName">Nama file</span>
+                        <span id="fileName">Nama file</span>
                     </div>
 
                     <div style="font-size: 0.8rem; color: #94a3b8;">
@@ -370,7 +370,7 @@
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="20 6 9 17 4 12"></polyline>
                             </svg>
-                            🚀 Import Pengguna ({{ $preview['valid_count'] }} Akun Valid)
+                            Import Pengguna ({{ $preview['valid_count'] }} Akun Valid)
                         </button>
                     </form>
                 </div>

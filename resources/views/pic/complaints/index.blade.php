@@ -53,7 +53,7 @@
         </div>
 
         <a href="{{ route('pic.complaints.report') }}" class="complaint-header-btn">
-            📊 Cetak Laporan
+            Cetak Laporan
         </a>
     </div>
 
@@ -89,16 +89,16 @@
 
                     <div class="complaint-meta-row">
                         <span class="complaint-meta-pill">
-                            📍 {{ $complaint->room->location ?? 'Lokasi -' }}
+                            {{ $complaint->room->location ?? 'Lokasi -' }}
                         </span>
 
                         <span class="complaint-meta-pill">
-                            🕒 Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
+                            Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
                         </span>
 
                         @if ($complaint->event)
                             <span class="complaint-meta-pill highlight">
-                                📅 Agenda: {{ $complaint->event->event_name }} ({{ $complaint->event->date?->format('d-m-Y') ?? '-' }})
+                                Agenda: {{ $complaint->event->event_name }} ({{ $complaint->event->date?->format('d-m-Y') ?? '-' }})
                             </span>
                         @endif
                     </div>
@@ -130,10 +130,10 @@
                 <div class="complaint-neat-content">
                     <div class="complaint-meta-bar">
                         <span>
-                            👤 <strong>Pelapor:</strong> {{ $complaint->reporter->name ?? '-' }} ({{ $complaint->reporter->email ?? '-' }})
+                            <strong>Pelapor:</strong> {{ $complaint->reporter->name ?? '-' }} ({{ $complaint->reporter->email ?? '-' }})
                         </span>
                         <span>
-                            🛠️ <strong>Ditangani:</strong>
+                            <strong>Ditangani:</strong>
                             @if ($complaint->handler)
                                 <strong style="color: #0f172a;">{{ $complaint->handler->name }}</strong>
                             @else
@@ -150,7 +150,6 @@
                     @if ($complaint->repair_note)
                         <div class="complaint-repair-note-box">
                             <div class="complaint-repair-note-header">
-                                <span>🔧</span>
                                 <strong>Keterangan Perbaikan:</strong>
                             </div>
                             <div class="complaint-repair-note-text">
@@ -164,11 +163,11 @@
                 @if ($complaint->photo_path)
                     <a href="{{ asset('storage/' . $complaint->photo_path) }}" target="_blank" rel="noopener noreferrer" class="complaint-thumb-box" title="Klik untuk melihat foto ukuran penuh">
                         <img src="{{ asset('storage/' . $complaint->photo_path) }}" alt="Foto Kerusakan" class="complaint-thumb-img">
-                        <span class="complaint-thumb-tag">🔍 Perbesar</span>
+                        <span class="complaint-thumb-tag">Perbesar</span>
                     </a>
                 @else
                     <div class="complaint-thumb-box" style="display: flex; align-items: center; justify-content: center; width: 95px; height: 95px; color: #94a3b8; font-size: 11px; text-align: center; padding: 6px;">
-                        <span>📷 Tanpa Foto</span>
+                        <span>Tanpa Foto</span>
                     </div>
                 @endif
             </div>
@@ -181,7 +180,7 @@
                     </span>
                     @if ($complaint->repaired_at)
                         <span style="font-size: 12px; color: #16a34a; font-weight: 500;">
-                            ✅ Ditandai selesai pada: {{ $complaint->repaired_at->format('d M Y, H:i') }}
+                            Ditandai selesai pada: {{ $complaint->repaired_at->format('d M Y, H:i') }}
                         </span>
                     @endif
                 </div>
@@ -214,7 +213,7 @@
 
                     <div id="repair_note_group_{{ $complaint->id }}" style="{{ $complaint->status_repair === 'Sudah Diperbaiki' ? 'display: block;' : 'display: none;' }} width: 100%; margin-top: 8px;">
                         <label for="repair_note_{{ $complaint->id }}" style="display: block; font-size: 12px; font-weight: 600; color: #166534; margin-bottom: 4px;">
-                            📝 Keterangan Perbaikan:
+                            Keterangan Perbaikan:
                         </label>
                         <input type="text" name="repair_note" id="repair_note_{{ $complaint->id }}" class="complaint-pic-select" style="width: 100%; box-sizing: border-box;" placeholder="Tambahkan keterangan perbaikan (contoh: Kabel proyektor telah diganti baru)..." value="{{ old('repair_note', $complaint->repair_note) }}">
                     </div>

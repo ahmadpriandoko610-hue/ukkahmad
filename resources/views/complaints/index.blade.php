@@ -85,16 +85,16 @@
 
                     <div class="complaint-meta-row">
                         <span class="complaint-meta-pill">
-                            📍 {{ $complaint->room->location ?? 'Lokasi -' }}
+                            {{ $complaint->room->location ?? 'Lokasi -' }}
                         </span>
 
                         <span class="complaint-meta-pill">
-                            🕒 Waktu Lapor: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
+                            Waktu Lapor: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
                         </span>
 
                         @if ($complaint->event)
                             <span class="complaint-meta-pill highlight">
-                                📅 Terkait Agenda: {{ $complaint->event->event_name }} ({{ $complaint->event->date?->format('d-m-Y') ?? '-' }})
+                                Terkait Agenda: {{ $complaint->event->event_name }} ({{ $complaint->event->date?->format('d-m-Y') ?? '-' }})
                             </span>
                         @endif
                     </div>
@@ -126,7 +126,7 @@
                 <div class="complaint-neat-content">
                     <div class="complaint-meta-bar">
                         <span>
-                            🛠️ <strong>Petugas Penanganan:</strong>
+                            <strong>Petugas Penanganan:</strong>
                             @if ($complaint->handler)
                                 <strong style="color: #0f172a;">{{ $complaint->handler->name }}</strong>
                             @else
@@ -136,7 +136,7 @@
 
                         @if ($complaint->repaired_at)
                             <span style="color: #16a34a;">
-                                ✅ <strong>Selesai pada:</strong> {{ $complaint->repaired_at->format('d M Y, H:i') }}
+                                <strong>Selesai pada:</strong> {{ $complaint->repaired_at->format('d M Y, H:i') }}
                             </span>
                         @endif
                     </div>
@@ -149,7 +149,6 @@
                     @if ($complaint->repair_note)
                         <div class="complaint-repair-note-box">
                             <div class="complaint-repair-note-header">
-                                <span>🔧</span>
                                 <strong>Keterangan Perbaikan dari PIC:</strong>
                             </div>
                             <div class="complaint-repair-note-text">
@@ -163,11 +162,11 @@
                 @if ($complaint->photo_path)
                     <a href="{{ asset('storage/' . $complaint->photo_path) }}" target="_blank" rel="noopener noreferrer" class="complaint-thumb-box" title="Klik untuk melihat foto ukuran penuh">
                         <img src="{{ asset('storage/' . $complaint->photo_path) }}" alt="Foto Kerusakan" class="complaint-thumb-img">
-                        <span class="complaint-thumb-tag">🔍 Perbesar</span>
+                        <span class="complaint-thumb-tag">Perbesar</span>
                     </a>
                 @else
                     <div class="complaint-thumb-box" style="display: flex; align-items: center; justify-content: center; width: 95px; height: 95px; color: #94a3b8; font-size: 11px; text-align: center; padding: 6px;">
-                        <span>📷 Tanpa Foto</span>
+                        <span>Tanpa Foto</span>
                     </div>
                 @endif
             </div>
@@ -176,15 +175,15 @@
             <div class="complaint-neat-footer">
                 @if ($complaint->status_repair === 'Sudah Diperbaiki')
                     <span style="font-size: 12.5px; color: #16a34a; font-weight: 500;">
-                        ✨ Fasilitas ini telah selesai diperbaiki dan siap digunakan kembali.
+                        Fasilitas ini telah selesai diperbaiki dan siap digunakan kembali.
                     </span>
                 @elseif ($complaint->status_repair === 'Menunggu Spare Part')
                     <span style="font-size: 12.5px; color: #d97706; font-weight: 500;">
-                        ⏳ Menunggu suku cadang / peralatan perbaikan dari tim sarana prasarana.
+                        Menunggu suku cadang / peralatan perbaikan dari tim sarana prasarana.
                     </span>
                 @else
                     <span style="font-size: 12.5px; color: #64748b;">
-                        📌 Laporan telah diterima oleh sistem dan menunggu penanganan dari PIC ruangan ({{ $complaint->room?->pic?->name ?? 'PIC' }}).
+                        Laporan telah diterima oleh sistem dan menunggu penanganan dari PIC ruangan ({{ $complaint->room?->pic?->name ?? 'PIC' }}).
                     </span>
                 @endif
             </div>
@@ -192,7 +191,6 @@
         </div>
     @empty
         <div class="alert" style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 32px 20px; text-align: center; color: #64748b;">
-            <div style="font-size: 32px; margin-bottom: 10px;">📋</div>
             <h4 style="margin: 0 0 6px 0; color: #1e293b; font-size: 16px;">Belum Ada Pengaduan</h4>
             <p style="margin: 0 0 16px 0; font-size: 13.5px;">Anda belum pernah mengirim laporan kerusakan ruangan.</p>
             <a href="{{ route('complaints.create') }}" class="complaint-header-btn" style="margin: 0 auto;">
