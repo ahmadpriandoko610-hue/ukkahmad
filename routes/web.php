@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 // Import Controllers
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\UserImportController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\DashboardController;
@@ -102,10 +103,29 @@ Route::middleware(['auth', 'role:admin'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
+    | Import Pengguna melalui File Excel (Admin)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/users/import', [UserImportController::class, 'form'])
+        ->name('users.import.form');
+
+    Route::get('/users/import/template', [UserImportController::class, 'downloadTemplate'])
+        ->name('users.import.template');
+
+    Route::post('/users/import/preview', [UserImportController::class, 'preview'])
+        ->name('users.import.preview');
+
+    Route::post('/users/import/store', [UserImportController::class, 'store'])
+        ->name('users.import.store');
+
+    Route::post('/users/import/cancel', [UserImportController::class, 'cancel'])
+        ->name('users.import.cancel');
+
+    /*
+    |--------------------------------------------------------------------------
     | Kelola User
     |--------------------------------------------------------------------------
     */
-
     Route::resource('users', UserController::class);
 
 
@@ -154,6 +174,9 @@ Route::middleware(['auth', 'role:admin'])->group(function () {
 
     Route::patch('/agenda/{event}/cancel', [EventController::class, 'cancel'])
         ->name('agenda.cancel');
+
+    Route::post('/agenda/{event}/reject', [EventController::class, 'adminReject'])
+        ->name('admin.agenda.reject');
 
     Route::post('/agenda/{event}/approve', [EventController::class, 'adminApprove'])
         ->name('admin.agenda.approve');

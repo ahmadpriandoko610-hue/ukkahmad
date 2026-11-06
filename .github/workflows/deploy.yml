@@ -37,85 +37,2722 @@ jobs:
           npm run build
 
       - name: 📦 Package App into ZIP
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
         run: |
+          # 1. Buat direktori penampung
           mkdir -p deploy_package/ukk_rapi
           mkdir -p deploy_package/public_html
 
-          # Copy core files ke ukk_rapi (kecuali node_modules, git, env, dll)
+          # 2. Salin core files ke ukk_rapi dengan MENGECUALIKAN storage lokal, node_modules, git, env, dll.
           rsync -av --exclude='node_modules' \
                     --exclude='.git' \
                     --exclude='.github' \
                     --exclude='public' \
+                    --exclude='storage' \
                     --exclude='.env*' \
                     --exclude='tests' \
                     --exclude='*.sql' \
                     --exclude='*.zip' \
                     ./ deploy_package/ukk_rapi/
 
-          # Copy public files ke public_html (termasuk file hidden .htaccess)
-          cp -a public/. deploy_package/public_html/
+          # 3. Salin berkas public ke public_html dengan MENGECUALIKAN folder storage
+          rsync -av --exclude='storage' public/ deploy_package/public_html/
 
-          # Sesuaikan path di index.php
+          # 4. Sesuaikan path bootstrap & vendor di index.php
           sed -i "s|__DIR__.'/../storage|__DIR__.'/../ukk_rapi/storage|g" deploy_package/public_html/index.php
           sed -i "s|__DIR__.'/../vendor|__DIR__.'/../ukk_rapi/vendor|g" deploy_package/public_html/index.php
           sed -i "s|__DIR__.'/../bootstrap|__DIR__.'/../ukk_rapi/bootstrap|g" deploy_package/public_html/index.php
           sed -i "s|\$app = require_once __DIR__.'/../ukk_rapi/bootstrap/app.php';|\$app = require_once __DIR__.'/../ukk_rapi/bootstrap/app.php';\n\$app->usePublicPath(__DIR__);|g" deploy_package/public_html/index.php
 
-          # Buat script PHP untuk extract otomatis di cPanel
+          # 5. Hitung SHA-256 hash dari token rahasia untuk verifikasi konstan
+          TOKEN_HASH=$(php -r 'echo hash("sha256", (string)getenv("DEPLOY_TOKEN"));')
+          EMPTY_HASH="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+          if [ -z "$TOKEN_HASH" ] || [ "$TOKEN_HASH" = "$EMPTY_HASH" ]; then
+            echo "::error::Secret DEPLOY_TOKEN belum diset di GitHub Repository Secrets! Deployment dibatalkan."
+            exit 1
+          fi
+
+          # 6. Buat skrip PHP ekstraksi otomatis di cPanel dengan verifikasi ketat & tanpa operator @
           cat << 'EOF' > deploy_package/public_html/auto_extract.php
           <?php
-          if (!isset($_GET['token']) || $_GET['token'] !== 'deploy_ukk_rapi_2026') {
+          if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+              http_response_code(405);
+              header('Allow: POST');
+              die('Method Not Allowed');
+          }
+
+          $expectedHash = '__EXPECTED_TOKEN_HASH__';
+          $providedToken = (string)($_POST['token'] ?? '');
+
+          if (empty($expectedHash) || empty($providedToken) || !hash_equals($expectedHash, hash('sha256', $providedToken))) {
               http_response_code(403);
               die('Access Denied');
           }
 
-          $zipFile = __DIR__ . '/deploy_payload.zip';
+          $stagingDir = __DIR__ . '/.deploy_staging';
+          $zipFile = $stagingDir . '/deploy_payload.zip';
           if (!file_exists($zipFile)) {
-              die('Payload not found');
+              $zipFile = __DIR__ . '/deploy_payload.zip';
+          }
+          $selfFile = __FILE__;
+          $hostingRoot = dirname(__DIR__);
+          $ukkRapiRoot = realpath(__DIR__ . '/../ukk_rapi') ?: ($hostingRoot . '/ukk_rapi');
+          $frameworkDir = $ukkRapiRoot . '/storage/framework';
+          $downFile = $frameworkDir . '/down';
+          $wasAlreadyInMaintenance = file_exists($downFile);
+
+          // Simpan kondisi awal public_html/storage sebelum tersentuh
+          $storageLink = __DIR__ . '/storage';
+          $wasStorageLinkInitially = is_link($storageLink);
+          $initialStorageTarget = $wasStorageLinkInitially ? readlink($storageLink) : null;
+          $wasStoragePhysicalInitially = (is_dir($storageLink) && !$wasStorageLinkInitially);
+          $wasStorageEmptyPhysicalInitially = false;
+          if ($wasStoragePhysicalInitially) {
+              $initScan = scandir($storageLink);
+              if ($initScan === false) {
+                  $cleanupStaging(false);
+                  http_response_code(500);
+                  die("STORAGE_INSPECTION_FAILED: Gagal memindai direktori storage fisik awal: $storageLink");
+              }
+              $initEntries = array_diff($initScan, ['.', '..']);
+              $wasStorageEmptyPhysicalInitially = empty($initEntries);
+          }
+          $physicalBackupPath = null;
+
+          // Tahapan siklus penanganan storage fisik (State Tracking Machine)
+          $STORAGE_STAGE_NOT_MODIFIED = 'not_modified';
+          $STORAGE_STAGE_BACKUP_IN_PROGRESS = 'backup_in_progress';
+          $STORAGE_STAGE_BACKUP_VERIFIED = 'backup_verified';
+          $STORAGE_STAGE_MIGRATION_IN_PROGRESS = 'migration_in_progress';
+          $STORAGE_STAGE_SOURCE_REMOVED = 'source_removed';
+          $STORAGE_STAGE_SYMLINK_CREATED = 'symlink_created';
+
+          $storageStage = $STORAGE_STAGE_NOT_MODIFIED;
+          $backupIsVerified = false;
+
+          // Helper pembersih direktori staging (HANYA menghapus berkas sementara)
+          $cleanupStaging = function (bool $keepBackup = false) use ($zipFile, $stagingDir, $selfFile) {
+              if (file_exists($zipFile)) {
+                  unlink($zipFile);
+              }
+              if (is_dir($stagingDir) && basename($stagingDir) === '.deploy_staging') {
+                  try {
+                      $it = new RecursiveIteratorIterator(
+                          new RecursiveDirectoryIterator($stagingDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                          RecursiveIteratorIterator::CHILD_FIRST
+                      );
+                      foreach ($it as $item) {
+                          if ($keepBackup && str_contains($item->getPathname(), 'pre_deploy_backup')) {
+                              continue;
+                          }
+                          if ($item->isLink() || $item->isFile()) {
+                              unlink($item->getPathname());
+                          } elseif ($item->isDir()) {
+                              rmdir($item->getPathname());
+                          }
+                      }
+                      if (!$keepBackup) {
+                          rmdir($stagingDir);
+                      }
+                  } catch (\Throwable $e) {
+                      // Pengabaian aman exception pada cleanup
+                  }
+              }
+              if (file_exists($selfFile)) {
+                  unlink($selfFile);
+              }
+          };
+
+          if (!file_exists($zipFile)) {
+              $cleanupStaging(false);
+              http_response_code(404);
+              die('PAYLOAD_NOT_FOUND');
           }
 
           $zip = new ZipArchive;
-          if ($zip->open($zipFile) === TRUE) {
-              $extractPath = realpath(__DIR__ . '/..');
-              $zip->extractTo($extractPath);
-              $zip->close();
-              @unlink($zipFile);
-              @unlink(__FILE__);
-              echo "DEPLOY_SUCCESS";
-          } else {
+          if ($zip->open($zipFile) !== TRUE) {
+              $cleanupStaging(false);
               http_response_code(500);
-              echo "EXTRACT_FAILED";
+              die('CANNOT_OPEN_ZIP');
+          }
+          $zip->setPassword($providedToken);
+
+          $extractPath = realpath(__DIR__ . '/..');
+          if ($extractPath === false || !is_dir($extractPath)) {
+              $zip->close();
+              $cleanupStaging(false);
+              http_response_code(500);
+              die('INVALID_EXTRACT_PATH');
+          }
+
+          // -------------------------------------------------------------
+          // VALIDASI KEAMANAN: ZIP BOMB, ZIP SLIP, STORAGE, & FILE SENSITIF
+          // -------------------------------------------------------------
+          $maxEntries = 25000;
+          $maxSingleFileSize = 52428800;  // 50 MB
+          $maxTotalSize = 524288000;      // 500 MB
+
+          if ($zip->numFiles <= 0 || $zip->numFiles > $maxEntries) {
+              $zip->close();
+              $cleanupStaging(false);
+              http_response_code(400);
+              die('SECURITY_VALIDATION_FAILED: ENTRY_COUNT_OUT_OF_BOUNDS');
+          }
+
+          $totalUncompressedSize = 0;
+          $seenZipEntries = [];
+          $seenZipEntriesLower = [];
+          $seenZipAncestorsLower = [];
+
+          for ($i = 0; $i < $zip->numFiles; $i++) {
+              $stat = $zip->statIndex($i);
+              if ($stat === false) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: CORRUPT_ENTRY');
+              }
+
+              $size = (int)($stat['size'] ?? 0);
+              if ($size > $maxSingleFileSize) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: FILE_SIZE_LIMIT_EXCEEDED');
+              }
+
+              $totalUncompressedSize += $size;
+              if ($totalUncompressedSize > $maxTotalSize) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: TOTAL_SIZE_LIMIT_EXCEEDED');
+              }
+
+              $entry = (string)($stat['name'] ?? '');
+
+              // 1. Cek null-byte injection
+              if (strpos($entry, "\0") !== false) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: NULL_BYTE_DETECTED');
+              }
+
+              // 2. Cek Windows drive letter
+              if (preg_match('/^[a-zA-Z]:/', $entry)) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: DRIVE_LETTER_DETECTED');
+              }
+
+              // 3. Deteksi Symbolic Link & Berkas Khusus
+              $isUnixDirAttr = false;
+              if ($zip->getExternalAttributesIndex($i, $opsys, $attr)) {
+                  if ($opsys === ZipArchive::OPSYS_UNIX) {
+                      $fileType = (($attr >> 16) & 0170000);
+                      if ($fileType === 0120000 || $fileType === 0020000 || $fileType === 0060000 || $fileType === 0010000 || $fileType === 0140000) {
+                          $zip->close();
+                          $cleanupStaging(false);
+                          http_response_code(400);
+                          die('SECURITY_VALIDATION_FAILED: SPECIAL_FILE_OR_SYMLINK_DETECTED');
+                      }
+                      if ($fileType === 0040000) {
+                          $isUnixDirAttr = true;
+                      }
+                  }
+              }
+
+              // 4. Normalisasi separator
+              $normalized = str_replace('\\', '/', $entry);
+
+              // 5. Tolak leading slash
+              if (str_starts_with($normalized, '/')) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: ABSOLUTE_PATH');
+              }
+
+              // 6. Periksa segmen path traversal '..'
+              $segments = explode('/', $normalized);
+              foreach ($segments as $segment) {
+                  if ($segment === '..') {
+                      $zip->close();
+                      $cleanupStaging(false);
+                      http_response_code(400);
+                      die('SECURITY_VALIDATION_FAILED: PATH_TRAVERSAL');
+                  }
+              }
+
+              $cleanSegments = [];
+              foreach ($segments as $s) {
+                  if ($s === '' || $s === '.') {
+                      continue;
+                  }
+                  $cleanSegments[] = $s;
+              }
+
+              if (empty($cleanSegments)) {
+                  continue;
+              }
+
+              // 7. Berkas hanya diizinkan masuk ke 'ukk_rapi' atau 'public_html'
+              $topDir = $cleanSegments[0];
+              if ($topDir !== 'ukk_rapi' && $topDir !== 'public_html') {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: INVALID_TARGET_DIR');
+              }
+
+              // 8. Perlindungan file sensitif: Larang keras ekstraksi berkas .env
+              foreach ($cleanSegments as $seg) {
+                  if (str_starts_with(strtolower($seg), '.env')) {
+                      $zip->close();
+                      $cleanupStaging(false);
+                      http_response_code(400);
+                      die('SECURITY_VALIDATION_FAILED: ENV_FILE_FORBIDDEN');
+                  }
+              }
+
+              // 9. Larang keras paket membawa folder storage lokal (pemeriksaan berbasis segmen dinormalisasi & case-insensitive)
+              $topLower = strtolower($cleanSegments[0]);
+              $secondLower = isset($cleanSegments[1]) ? strtolower($cleanSegments[1]) : '';
+              if (($topLower === 'ukk_rapi' && $secondLower === 'storage') ||
+                  ($topLower === 'public_html' && $secondLower === 'storage') ||
+                  ($topLower === 'storage')
+              ) {
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  die('SECURITY_VALIDATION_FAILED: STORAGE_IN_PAYLOAD_FORBIDDEN');
+              }
+
+              // 10. Validasi nama entri ZIP setelah normalisasi, tolak duplikat identik, case-insensitive,
+              //     konflik file vs direktori, tabrakan casing direktori induk (ancestor case collision),
+              //     serta dua nama berbeda yang mengarah ke tujuan ekstraksi yang sama.
+              $isDir = str_ends_with($normalized, '/') || $isUnixDirAttr;
+              $targetNormalized = implode('/', $cleanSegments);
+              $targetLower = strtolower($targetNormalized);
+              $entryType = $isDir ? 'dir' : 'file';
+
+              // A. Tolak duplikat identik, case-insensitive, dan dua nama yang mengarah ke target ekstraksi yang sama
+              if (isset($seenZipEntriesLower[$targetLower])) {
+                  $existing = $seenZipEntriesLower[$targetLower];
+                  $zip->close();
+                  $cleanupStaging(false);
+                  http_response_code(400);
+                  if ($existing['type'] !== $entryType) {
+                      die("SECURITY_VALIDATION_FAILED: TYPE_CONFLICT: Konflik file vs direktori antara '{$existing['original']}' dan '$entry' (target: '$targetNormalized')");
+                  }
+                  if ($existing['original'] === $entry) {
+                      die("SECURITY_VALIDATION_FAILED: DUPLICATE_ENTRY: Duplikat identik entri ZIP terdeteksi: '$entry'");
+                  }
+                  die("SECURITY_VALIDATION_FAILED: DUPLICATE_ENTRY: Duplikat entri ZIP atau path collision terdeteksi antara '{$existing['original']}' dan '$entry' (target: '$targetNormalized')");
+              }
+
+              // B. Tolak konflik file vs direktori: file tidak boleh bertabrakan dengan direktori ancestor yang sudah terdaftar
+              if ($entryType === 'file') {
+                  if (isset($seenZipAncestorsLower[$targetLower])) {
+                      $zip->close();
+                      $cleanupStaging(false);
+                      http_response_code(400);
+                      die("SECURITY_VALIDATION_FAILED: TYPE_CONFLICT: Berkas '$entry' berkonflik dengan direktori induk yang telah terdaftar (target: '$targetNormalized')");
+                  }
+              }
+
+              // C. Tolak konflik casing direktori: jika entri ini direktori, pastikan casing cocok dengan direktori induk yang tercatat
+              if ($entryType === 'dir') {
+                  if (isset($seenZipAncestorsLower[$targetLower]) && $seenZipAncestorsLower[$targetLower] !== $targetNormalized) {
+                      $zip->close();
+                      $cleanupStaging(false);
+                      http_response_code(400);
+                      die("SECURITY_VALIDATION_FAILED: ANCESTOR_CASE_COLLISION: Konflik casing direktori antara '$targetNormalized' dan direktori induk '{$seenZipAncestorsLower[$targetLower]}'");
+                  }
+                  $seenZipAncestorsLower[$targetLower] = $targetNormalized;
+              }
+
+              // D. Validasi seluruh direktori induk (ancestor): tolak konflik file vs direktori dan tolak tabrakan casing direktori induk
+              $ancestorParts = $cleanSegments;
+              array_pop($ancestorParts);
+              $accum = '';
+              foreach ($ancestorParts as $part) {
+                  $accum = ($accum === '') ? $part : ($accum . '/' . $part);
+                  $accumLower = strtolower($accum);
+
+                  // Direktori induk tidak boleh pernah terdaftar sebagai berkas reguler dan tidak boleh beda casing
+                  if (isset($seenZipEntriesLower[$accumLower])) {
+                      if ($seenZipEntriesLower[$accumLower]['type'] === 'file') {
+                          $zip->close();
+                          $cleanupStaging(false);
+                          http_response_code(400);
+                          die("SECURITY_VALIDATION_FAILED: TYPE_CONFLICT: Direktori induk '$accum' telah terdaftar sebagai berkas reguler");
+                      }
+                      if ($seenZipEntriesLower[$accumLower]['normalized'] !== $accum) {
+                          $zip->close();
+                          $cleanupStaging(false);
+                          http_response_code(400);
+                          die("SECURITY_VALIDATION_FAILED: ANCESTOR_CASE_COLLISION: Konflik casing direktori induk antara '{$seenZipEntriesLower[$accumLower]['normalized']}' dan '$accum'");
+                      }
+                  }
+
+                  // Tolak dua entri dengan direktori induk yang hanya berbeda huruf kapital/kecil (case collision)
+                  if (isset($seenZipAncestorsLower[$accumLower])) {
+                      if ($seenZipAncestorsLower[$accumLower] !== $accum) {
+                          $zip->close();
+                          $cleanupStaging(false);
+                          http_response_code(400);
+                          die("SECURITY_VALIDATION_FAILED: ANCESTOR_CASE_COLLISION: Konflik casing direktori induk antara '{$seenZipAncestorsLower[$accumLower]}' dan '$accum' (berkas: '$entry')");
+                      }
+                  } else {
+                      $seenZipAncestorsLower[$accumLower] = $accum;
+                  }
+              }
+
+              $seenZipEntries[$targetNormalized] = ['type' => $entryType, 'original' => $entry];
+              $seenZipEntriesLower[$targetLower] = ['type' => $entryType, 'original' => $entry, 'normalized' => $targetNormalized];
+          }
+
+          // Format resmi Maintenance Mode Laravel 13
+          $maintenancePayload = json_encode([
+              'time' => time(),
+              'retry' => 15,
+              'secret' => null,
+              'status' => 503,
+              'template' => '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>Pembaruan Sistem</title><style>body{font-family:system-ui,-apple-system,sans-serif;text-align:center;padding:12% 20px;background:#f8fafc;color:#1e293b;}h1{font-size:24px;margin-bottom:8px;}p{font-size:15px;color:#64748b;}</style></head><body><h1>Sistem Sedang Diperbarui</h1><p>Mohon tunggu beberapa saat, sistem sedang menerapkan pembaruan aplikasi.</p></body></html>'
+          ]);
+
+          // Aktifkan maintenance mode sebelum menyentuh file apa pun
+          if (!$wasAlreadyInMaintenance) {
+              if (!is_dir($frameworkDir)) {
+                  if (!mkdir($frameworkDir, 0755, true) && !is_dir($frameworkDir)) {
+                      $cleanupStaging(false);
+                      http_response_code(500);
+                      die('MAINTENANCE_MODE_ACTIVATION_FAILED: Gagal membuat direktori storage/framework');
+                  }
+                  if (!chmod($frameworkDir, 0755)) {
+                      $cleanupStaging(false);
+                      http_response_code(500);
+                      die('MAINTENANCE_MODE_ACTIVATION_FAILED: Gagal chmod direktori storage/framework');
+                  }
+              }
+              $putDown = file_put_contents($downFile, $maintenancePayload);
+              clearstatcache(true, $downFile);
+              if ($putDown === false || !file_exists($downFile) || filesize($downFile) !== strlen($maintenancePayload)) {
+                  if (file_exists($downFile)) {
+                      $unlinked = unlink($downFile);
+                      clearstatcache(true, $downFile);
+                      if (!$unlinked || file_exists($downFile)) {
+                          $cleanupStaging(false);
+                          http_response_code(500);
+                          die("MAINTENANCE_MODE_ACTIVATION_FAILED: Penulisan berkas down tidak lengkap dan gagal dibersihkan. Website mungkin masih dalam mode maintenance: $downFile");
+                      }
+                  }
+                  $cleanupStaging(false);
+                  http_response_code(500);
+                  die('MAINTENANCE_MODE_ACTIVATION_FAILED: Gagal menulis berkas down secara utuh');
+              }
+              if (!chmod($downFile, 0644)) {
+                  $cleanupStaging(false);
+                  $unlinked = unlink($downFile);
+                  clearstatcache(true, $downFile);
+                  http_response_code(500);
+                  if (!$unlinked || file_exists($downFile)) {
+                      die("MAINTENANCE_MODE_ACTIVATION_FAILED: Gagal chmod berkas down dan gagal membersihkan berkas down. Website mungkin masih dalam mode maintenance: $downFile");
+                  }
+                  die('MAINTENANCE_MODE_ACTIVATION_FAILED: Gagal chmod berkas down. Berkas down berhasil dibersihkan kembali.');
+              }
+          }
+
+          // -------------------------------------------------------------
+          // CAKUPAN BACKUP MENYELURUH (COMPREHENSIVE BACKUP COVERAGE)
+          // -------------------------------------------------------------
+          $backupRoot = $stagingDir . '/pre_deploy_backup';
+          if (!is_dir($backupRoot)) {
+              if (!mkdir($backupRoot, 0755, true) && !is_dir($backupRoot)) {
+                  $cleanupStaging(false);
+                  http_response_code(500);
+                  die('CANNOT_CREATE_BACKUP_ROOT');
+              }
+          }
+          $backupErrors = [];
+
+          $safeCopyFile = function (string $src, string $dst) use (&$backupErrors): bool {
+              if (is_link($src)) {
+                  $backupErrors[] = "Tautan symlink dilarang pada safeCopyFile: $src";
+                  return false;
+              }
+              $srcType = @filetype($src);
+              if (!is_file($src) || $srcType !== 'file') {
+                  $backupErrors[] = "Berkas sumber bukan regular file (tipe: " . ($srcType ?: 'unknown') . "): $src";
+                  return false;
+              }
+              $parent = dirname($dst);
+              if (is_link($parent)) {
+                  if (!unlink($parent)) {
+                      $backupErrors[] = "Gagal unlink symlink parent backup: $parent";
+                      return false;
+                  }
+              }
+              if (!is_dir($parent)) {
+                  if (!mkdir($parent, 0755, true) && !is_dir($parent)) {
+                      $backupErrors[] = "Gagal membuat direktori induk: $parent";
+                      return false;
+                  }
+                  if (!chmod($parent, 0755)) {
+                      $backupErrors[] = "Gagal chmod direktori induk: $parent";
+                      return false;
+                  }
+              }
+              if (is_link($dst)) {
+                  if (!unlink($dst)) {
+                      $backupErrors[] = "Gagal unlink symlink dst sebelum copy: $dst";
+                      return false;
+                  }
+              }
+              if (!copy($src, $dst)) {
+                  $backupErrors[] = "Gagal menyalin berkas: $src -> $dst";
+                  return false;
+              }
+              if (!chmod($dst, 0644)) {
+                  $backupErrors[] = "Gagal chmod berkas: $dst";
+                  return false;
+              }
+              return true;
+          };
+
+          $safeCopyDir = function (string $src, string $dst) use (&$safeCopyDir, &$safeCopyFile, &$backupErrors): bool {
+              if (is_link($dst)) {
+                  if (!unlink($dst)) {
+                      $backupErrors[] = "Gagal unlink symlink target sebelum membuat direktori backup: $dst";
+                      return false;
+                  }
+              }
+              if (!is_dir($dst)) {
+                  if (!mkdir($dst, 0755, true) && !is_dir($dst)) {
+                      $backupErrors[] = "Gagal membuat direktori: $dst";
+                      return false;
+                  }
+                  if (!chmod($dst, 0755)) {
+                      $backupErrors[] = "Gagal chmod direktori: $dst";
+                      return false;
+                  }
+              }
+              if (is_link($src)) {
+                  $linkTarget = readlink($src);
+                  if ($linkTarget !== false) {
+                      if (file_exists($dst) || is_link($dst)) {
+                          if (!unlink($dst)) {
+                              $backupErrors[] = "Gagal unlink target sebelum menyalin symlink direktori: $dst";
+                              return false;
+                          }
+                      }
+                      if (!symlink($linkTarget, $dst)) {
+                          $backupErrors[] = "Gagal menyalin symlink direktori: $src -> $dst";
+                          return false;
+                      }
+                  }
+                  return true;
+              }
+              $dh = opendir($src);
+              if ($dh === false) {
+                  $backupErrors[] = "Gagal membuka direktori sumber: $src";
+                  return false;
+              }
+              $ok = true;
+              while (true) {
+                  error_clear_last();
+                  $entry = readdir($dh);
+                  if ($entry === false) {
+                      $lastErr = error_get_last();
+                      if ($lastErr !== null) {
+                          $backupErrors[] = "Kegagalan pembacaan direktori di tengah iterasi: $src (" . $lastErr['message'] . ")";
+                          $ok = false;
+                      }
+                      break;
+                  }
+                  if ($entry === '.' || $entry === '..') {
+                      continue;
+                  }
+                  $srcPath = $src . '/' . $entry;
+                  $dstPath = $dst . '/' . $entry;
+                  if (is_link($srcPath)) {
+                      $linkTarget = readlink($srcPath);
+                      if ($linkTarget !== false) {
+                          if (file_exists($dstPath) || is_link($dstPath)) {
+                              if (!unlink($dstPath)) {
+                                  $backupErrors[] = "Gagal unlink dstPath sebelum menyalin symlink: $dstPath";
+                                  $ok = false;
+                                  break;
+                              }
+                          }
+                          if (!symlink($linkTarget, $dstPath)) {
+                              $backupErrors[] = "Gagal menyalin symlink: $srcPath -> $dstPath";
+                              $ok = false;
+                              break;
+                          }
+                      }
+                  } elseif (is_dir($srcPath)) {
+                      if (!$safeCopyDir($srcPath, $dstPath)) {
+                          $ok = false;
+                          break;
+                      }
+                  } else {
+                      $entryType = @filetype($srcPath);
+                      if ($entryType !== 'file') {
+                          $backupErrors[] = "Jenis filesystem khusus dilarang dalam pencadangan (tipe: " . ($entryType ?: 'unknown') . "): $srcPath";
+                          $ok = false;
+                          break;
+                      }
+                      if (!$safeCopyFile($srcPath, $dstPath)) {
+                          $ok = false;
+                          break;
+                      }
+                  }
+              }
+              closedir($dh);
+              return $ok;
+          };
+
+          // 1. Cadangkan seluruh direktori inti yang dikelola
+          $coreDirs = ['app', 'bootstrap', 'config', 'database', 'resources', 'routes', 'vendor'];
+          foreach ($coreDirs as $cd) {
+              $src = $ukkRapiRoot . '/' . $cd;
+              $dst = $backupRoot . '/ukk_rapi/' . $cd;
+              if (is_dir($src)) {
+                  if (!$safeCopyDir($src, $dst)) {
+                      break;
+                  }
+              }
+          }
+
+          // 2. Cadangkan berkas akar inti
+          $coreFiles = ['artisan', 'composer.json', 'composer.lock', 'package.json'];
+          foreach ($coreFiles as $cf) {
+              $src = $ukkRapiRoot . '/' . $cf;
+              $dst = $backupRoot . '/ukk_rapi/' . $cf;
+              if (file_exists($src)) {
+                  $safeCopyFile($src, $dst);
+              }
+          }
+
+          // 3. Cadangkan berkas publik (build, index, htaccess, robots, favicon, info, dll.)
+          if (is_dir(__DIR__ . '/build')) {
+              $safeCopyDir(__DIR__ . '/build', $backupRoot . '/public_html/build');
+          }
+          $publicFiles = ['index.php', '.htaccess', 'robots.txt', 'favicon.ico', 'info.php'];
+          foreach ($publicFiles as $pf) {
+              $src = __DIR__ . '/' . $pf;
+              $dst = $backupRoot . '/public_html/' . $pf;
+              if (file_exists($src)) {
+                  $safeCopyFile($src, $dst);
+              }
+          }
+
+          // 4. Dynamic ZIP Target Discovery:
+          for ($i = 0; $i < $zip->numFiles; $i++) {
+              $stat = $zip->statIndex($i);
+              $entryName = str_replace('\\', '/', $stat['name']);
+              if (str_ends_with($entryName, '/')) {
+                  continue;
+              }
+              $targetOnServer = $extractPath . '/' . $entryName;
+              $backupTarget = $backupRoot . '/' . $entryName;
+              if (file_exists($targetOnServer) && !file_exists($backupTarget)) {
+                  $safeCopyFile($targetOnServer, $backupTarget);
+              }
+          }
+
+          // 5. Validasi integritas & susun manifest snapshot pencadangan lengkap
+          $backupManifest = [];
+          if (is_dir($backupRoot)) {
+              try {
+                  $manifestScanIt = new RecursiveIteratorIterator(
+                      new RecursiveDirectoryIterator($backupRoot, RecursiveDirectoryIterator::SKIP_DOTS),
+                      RecursiveIteratorIterator::SELF_FIRST
+                  );
+                  foreach ($manifestScanIt as $mItem) {
+                      if ($mItem->isLink()) {
+                          $backupErrors[] = "Symlink dilarang dalam direktori backup (manifest scan): " . $mItem->getPathname();
+                          break;
+                      }
+                      $rel = substr($mItem->getPathname(), strlen($backupRoot) + 1);
+                      $rel = str_replace('\\', '/', $rel);
+                      if ($mItem->isDir()) {
+                          $backupManifest[$rel] = ['type' => 'dir'];
+                      } elseif ($mItem->isFile()) {
+                          $mSize = $mItem->getSize();
+                          $mHash = hash_file('sha256', $mItem->getPathname());
+                          if ($mSize === false || $mHash === false) {
+                              $backupErrors[] = "Gagal menghitung hash/size manifest backup: " . $mItem->getPathname();
+                              break;
+                          }
+                          $backupManifest[$rel] = [
+                              'type' => 'file',
+                              'size' => $mSize,
+                              'hash' => $mHash,
+                          ];
+                      }
+                  }
+              } catch (\Throwable $e) {
+                  $backupErrors[] = "Exception saat menyusun manifest backup: " . $e->getMessage();
+              }
+          }
+
+          // Batalkan deployment sebelum ekstraksi jika backup mengalami kegagalan
+          if (!empty($backupErrors)) {
+              $zip->close();
+              if (!$wasAlreadyInMaintenance && file_exists($downFile)) {
+                  $unlinked = unlink($downFile);
+                  clearstatcache(true, $downFile);
+                  if (!$unlinked || file_exists($downFile)) {
+                      $backupErrors[] = "Gagal melepas maintenance mode setelah kegagalan backup: $downFile";
+                  }
+              }
+              $cleanupStaging(false);
+              http_response_code(500);
+              die('BACKUP_FAILED_ABORTING_DEPLOYMENT: ' . implode('; ', $backupErrors));
+          }
+
+          // -------------------------------------------------------------
+          // FUNGSI ROLLBACK EXACT MIRROR & STORAGE RESTORATION (TANPA OPERATOR @)
+          // -------------------------------------------------------------
+          $rollbackErrors = [];
+
+          $scanDirSafely = function (string $dir, ?string &$error = null): ?array {
+              $error = null;
+              if (is_link($dir)) {
+                  $error = "Direktori berupa symlink (dilarang): $dir";
+                  return null;
+              }
+              if (!is_dir($dir)) {
+                  $error = "Direktori tidak ditemukan atau bukan direktori: $dir";
+                  return null;
+              }
+
+              // DOKUMENTASI BATASAN TEKNIS MUTASI KONKUREN:
+              // Perbandingan filemtime sebelum dan sesudah scandir() adalah mekanisme deteksi *best-effort*.
+              // KETERBATASAN NYATA:
+              // 1. Resolusi timestamp pada filesystem (ext3, FAT, mount tertentu) memiliki granularitas 1 detik (atau 2 detik).
+              //    Perubahan berkas yang terjadi dalam detik yang sama tidak akan mengubah nilai filemtime.
+              // 2. Cache stat PHP dan OS (meskipun clearstatcache dipanggil) pada networked/shared filesystem
+              //    tidak selalu menjamin pembaruan mtime seketika.
+              // 3. Pada Unix, mtime direktori hanya berubah ketika ada entri yang ditambah/dihapus/direname;
+              //    perubahan konten pada berkas di dalamnya tidak mengubah mtime direktori induk.
+              // Oleh karena itu, pemeriksaan kegagalan scandir() !== false tetap menjadi pertahanan utama
+              // terhadap kegagalan pembacaan I/O direktori, sementara filemtime digunakan sebagai deteksi heuristik tambahan.
+              clearstatcache(true, $dir);
+              $mtimeBefore = @filemtime($dir);
+
+              error_clear_last();
+              $rawEntries = @scandir($dir);
+              if ($rawEntries === false) {
+                  $lastErr = error_get_last();
+                  $error = "Gagal membaca direktori: $dir" . ($lastErr ? " (" . $lastErr['message'] . ")" : "");
+                  return null;
+              }
+
+              clearstatcache(true, $dir);
+              $mtimeAfter = @filemtime($dir);
+              if ($mtimeBefore !== false && $mtimeAfter !== false && $mtimeBefore !== $mtimeAfter) {
+                  $error = "Direktori berubah ketika sedang dibaca (mtime mismatch / concurrent mutation): $dir";
+                  return null;
+              }
+
+              $clean = [];
+              foreach ($rawEntries as $e) {
+                  if ($e === '.' || $e === '..') continue;
+                  $clean[] = $e;
+              }
+              return $clean;
+          };
+
+          $deleteRecursiveNoSymlinkFollow = function (string $target) use (&$deleteRecursiveNoSymlinkFollow, &$rollbackErrors, $scanDirSafely): bool {
+              if (is_link($target) || is_file($target)) {
+                  if (!unlink($target)) {
+                      $rollbackErrors[] = "Gagal unlink berkas/tautan: $target";
+                      return false;
+                  }
+                  return true;
+              }
+              if (is_dir($target)) {
+                  $entries = $scanDirSafely($target, $err);
+                  if ($entries === null) {
+                      $rollbackErrors[] = "Gagal membuka direktori untuk penghapusan: $target (" . ($err ?: 'unknown') . ")";
+                      return false;
+                  }
+                  foreach ($entries as $f) {
+                      if (!$deleteRecursiveNoSymlinkFollow($target . '/' . $f)) {
+                          return false;
+                      }
+                  }
+                  if (!rmdir($target)) {
+                      $rollbackErrors[] = "Gagal rmdir: $target";
+                      return false;
+                  }
+                  return true;
+              }
+              return true;
+          };
+
+          $isHierarchySymlinkFree = function (string $path) use (&$rollbackErrors): bool {
+              $norm = str_replace('\\', '/', $path);
+              if (strpos($norm, "\0") !== false) {
+                  $rollbackErrors[] = "Null-byte terdeteksi pada path: $path";
+                  return false;
+              }
+              foreach (explode('/', $norm) as $seg) {
+                  if ($seg === '..') {
+                      $rollbackErrors[] = "Path traversal segmen '..' terdeteksi: $path";
+                      return false;
+                  }
+              }
+              if (!preg_match('#^([a-zA-Z]:/|/)#', $norm)) {
+                  $rollbackErrors[] = "Path harus berupa path absolut: $path";
+                  return false;
+              }
+              $curr = rtrim($norm, '/');
+              while ($curr && $curr !== '/' && !preg_match('#^[a-zA-Z]:$#', $curr)) {
+                  if (is_link($curr)) {
+                      $rollbackErrors[] = "Symlink terdeteksi pada hierarki path (dilarang dan tidak diikuti): $curr";
+                      return false;
+                  }
+                  $parent = dirname($curr);
+                  if ($parent === $curr) break;
+                  $curr = $parent;
+              }
+              return true;
+          };
+
+          $resolveCanonicalPathSafe = function (
+              string $path,
+              ?string &$error = null,
+              ?string $mustBeInside = null
+          ) use ($isHierarchySymlinkFree): ?string {
+              $error = null;
+
+              // 1. Tolak null byte
+              if (strpos($path, "\0") !== false) {
+                  $error = "Null-byte terdeteksi pada path: $path";
+                  return null;
+              }
+
+              // 2. Tolak UNC path secara eksplisit
+              if (str_starts_with($path, '\\\\') || str_starts_with($path, '//') || str_starts_with($path, '\\/') || str_starts_with($path, '/\\')) {
+                  $error = "UNC path tidak didukung: $path";
+                  return null;
+              }
+
+              // 3. Normalisasi separator awal untuk inspeksi
+              $norm = str_replace('\\', '/', $path);
+
+              // 4. Tolak Windows drive-relative path (misal: 'C:foo/bar' tanpa slash setelah titik dua)
+              if (preg_match('/^[a-zA-Z]:(?!\/)/', $norm)) {
+                  $error = "Windows drive-relative path tidak diizinkan: $path";
+                  return null;
+              }
+
+              // 5. Tolak relative path: wajib diawali dengan '/' (Unix root) atau '[a-zA-Z]:/' (Windows drive root)
+              if (!preg_match('#^([a-zA-Z]:/|/)#', $norm)) {
+                  $error = "Path harus berupa path absolut: $path";
+                  return null;
+              }
+
+              // 6. Tolak path traversal segmen '..'
+              foreach (explode('/', $norm) as $seg) {
+                  if ($seg === '..') {
+                      $error = "Path traversal segmen '..' terdeteksi: $path";
+                      return null;
+                  }
+              }
+
+              // 7. Deteksi root path Unix atau Windows drive root sebelum duplicate slashes dihapus
+              $isUnixRoot = ($norm === '/' || preg_match('#^/+$#', $norm));
+              $isWindowsDriveRoot = (bool)preg_match('#^[a-zA-Z]:/+$#', $norm);
+
+              $norm = preg_replace('#/{2,}#', '/', $norm);
+
+              if ($isUnixRoot) {
+                  $norm = '/';
+              } elseif ($isWindowsDriveRoot) {
+                  $norm = strtoupper(substr($norm, 0, 2)) . '/';
+              } else {
+                  $norm = rtrim($norm, '/');
+              }
+
+              $resultCanon = null;
+
+              // 8. Jika path sudah ada di filesystem
+              if (file_exists($norm) || is_link($norm)) {
+                  if (is_link($norm)) {
+                      $error = "Path berupa symlink (dilarang): $path";
+                      return null;
+                  }
+                  $canon = realpath($norm);
+                  if ($canon === false || is_link($canon)) {
+                      $error = "Gagal mendapatkan canonical path atau berupa symlink: $path";
+                      return null;
+                  }
+                  if (!$isHierarchySymlinkFree($canon)) {
+                      $error = "Hierarki path mengandung symlink: $path";
+                      return null;
+                  }
+                  $normCanon = str_replace('\\', '/', $canon);
+                  if ($normCanon !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normCanon)) {
+                      $normCanon = rtrim($normCanon, '/');
+                  }
+                  $resultCanon = $normCanon;
+              } else {
+                  // 9. Jika path belum ada: cari ancestor terdekat yang benar-benar ada
+                  $curr = $norm;
+                  $tail = [];
+                  while (strlen($curr) > 0 && !file_exists($curr)) {
+                      $tail[] = basename($curr);
+                      $parent = dirname($curr);
+                      if ($parent === $curr) break;
+                      $curr = $parent;
+                  }
+
+                  if (!file_exists($curr) || is_link($curr) || !is_dir($curr)) {
+                      $error = "Ancestor terdekat dari path tidak valid atau berupa symlink: $curr (path: $path)";
+                      return null;
+                  }
+
+                  $canonExisting = realpath($curr);
+                  if ($canonExisting === false || is_link($canonExisting) || !is_dir($canonExisting)) {
+                      $error = "Gagal memvalidasi canonical path ancestor yang ada: $curr";
+                      return null;
+                  }
+                  if (!$isHierarchySymlinkFree($canonExisting)) {
+                      $error = "Ancestor path mengandung symlink: $curr";
+                      return null;
+                  }
+
+                  $normCanonExisting = str_replace('\\', '/', $canonExisting);
+                  if ($normCanonExisting !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normCanonExisting)) {
+                      $normCanonExisting = rtrim($normCanonExisting, '/');
+                  }
+
+                  $tail = array_reverse($tail);
+                  if ($normCanonExisting === '/') {
+                      $resultCanon = '/' . implode('/', $tail);
+                  } elseif (preg_match('#^[a-zA-Z]:/$#', $normCanonExisting)) {
+                      $resultCanon = $normCanonExisting . implode('/', $tail);
+                  } else {
+                      $resultCanon = $normCanonExisting . '/' . implode('/', $tail);
+                  }
+              }
+
+              // 10. Validasi containment terhadap $mustBeInside dengan boundary separator
+              if ($mustBeInside !== null && $resultCanon !== null) {
+                  $realMust = realpath($mustBeInside);
+                  if ($realMust === false || is_link($realMust) || !is_dir($realMust)) {
+                      $error = "Permitted root tidak valid atau berupa symlink: $mustBeInside";
+                      return null;
+                  }
+                  if (!$isHierarchySymlinkFree($realMust)) {
+                      $error = "Permitted root memiliki ancestor symlink: $mustBeInside";
+                      return null;
+                  }
+                  $normMust = str_replace('\\', '/', $realMust);
+                  if ($normMust !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normMust)) {
+                      $normMust = rtrim($normMust, '/');
+                  }
+
+                  $isInside = false;
+                  if ($normMust === '/') {
+                      $isInside = str_starts_with($resultCanon, '/');
+                  } elseif (preg_match('#^[a-zA-Z]:/$#', $normMust)) {
+                      $isInside = ($resultCanon === $normMust || str_starts_with($resultCanon, $normMust));
+                  } else {
+                      $isInside = ($resultCanon === $normMust || str_starts_with($resultCanon, $normMust . '/'));
+                  }
+
+                  if (!$isInside) {
+                      $error = "Path kanonikal ($resultCanon) berada di luar batas permitted root ($normMust)";
+                      return null;
+                  }
+              }
+
+              return $resultCanon;
+          };
+
+          $prepareDirectorySafely = function (
+              string $dir,
+              ?string $permittedRoot = null
+          ) use (
+              &$rollbackErrors,
+              $isHierarchySymlinkFree,
+              $resolveCanonicalPathSafe
+          ): bool {
+              $canonPermitted = null;
+              if ($permittedRoot !== null) {
+                  $realRoot = realpath($permittedRoot);
+                  if ($realRoot === false || is_link($realRoot) || !is_dir($realRoot)) {
+                      $rollbackErrors[] = "Permitted root tidak valid atau berupa symlink: $permittedRoot";
+                      return false;
+                  }
+                  if (!$isHierarchySymlinkFree($realRoot)) {
+                      $rollbackErrors[] = "Permitted root memiliki ancestor symlink: $permittedRoot";
+                      return false;
+                  }
+                  $canonPermitted = str_replace('\\', '/', $realRoot);
+                  if ($canonPermitted !== '/' && !preg_match('#^[a-zA-Z]:/$#', $canonPermitted)) {
+                      $canonPermitted = rtrim($canonPermitted, '/');
+                  }
+              }
+
+              $canonTarget = $resolveCanonicalPathSafe($dir, $resolveErr, $permittedRoot);
+              if ($canonTarget === null) {
+                  $rollbackErrors[] = "Gagal menyelesaikan canonical target direktori: $dir (" . ($resolveErr ?: 'unknown') . ")";
+                  return false;
+              }
+
+              if (file_exists($canonTarget) || is_link($canonTarget)) {
+                  if (is_link($canonTarget)) {
+                      $rollbackErrors[] = "Target direktori berupa symlink: $canonTarget";
+                      return false;
+                  }
+                  if (!is_dir($canonTarget)) {
+                      $rollbackErrors[] = "Target sudah ada tetapi bukan direktori: $canonTarget";
+                      return false;
+                  }
+                  return true;
+              }
+
+              $curr = $canonTarget;
+              $missingSegments = [];
+              while (strlen($curr) > 0 && !file_exists($curr)) {
+                  $missingSegments[] = basename($curr);
+                  $parent = dirname($curr);
+                  if ($parent === $curr) break;
+                  $curr = $parent;
+              }
+
+              if (!file_exists($curr) || is_link($curr) || !is_dir($curr) || !$isHierarchySymlinkFree($curr)) {
+                  $rollbackErrors[] = "Ancestor terdekat untuk pembuatan direktori tidak valid atau mengandung symlink: $curr";
+                  return false;
+              }
+
+              $canonExisting = realpath($curr);
+              if ($canonExisting === false || is_link($canonExisting) || !is_dir($canonExisting)) {
+                  $rollbackErrors[] = "Gagal canonical realpath ancestor terdekat: $curr";
+                  return false;
+              }
+
+              $normBuild = str_replace('\\', '/', $canonExisting);
+              if ($normBuild !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normBuild)) {
+                  $normBuild = rtrim($normBuild, '/');
+              }
+
+              $missingSegments = array_reverse($missingSegments);
+
+              foreach ($missingSegments as $seg) {
+                  if ($seg === '' || $seg === '.' || $seg === '..') {
+                      $rollbackErrors[] = "Segmen path tidak valid dalam pembuatan direktori: $seg";
+                      return false;
+                  }
+                  if ($normBuild === '/') {
+                      $normBuild = '/' . $seg;
+                  } elseif (preg_match('#^[a-zA-Z]:/$#', $normBuild)) {
+                      $normBuild = $normBuild . $seg;
+                  } else {
+                      $normBuild = $normBuild . '/' . $seg;
+                  }
+
+                  if (is_link($normBuild)) {
+                      $rollbackErrors[] = "Symlink terdeteksi saat membuat hierarki direktori: $normBuild";
+                      return false;
+                  }
+
+                  if (file_exists($normBuild)) {
+                      if (!is_dir($normBuild)) {
+                          $rollbackErrors[] = "Komponen path bukan direktori: $normBuild";
+                          return false;
+                      }
+                  } else {
+                      if (!@mkdir($normBuild, 0755)) {
+                          $rollbackErrors[] = "Gagal membuat direktori (mkdir gagal): $normBuild";
+                          return false;
+                      }
+                      if (!is_dir($normBuild) || is_link($normBuild)) {
+                          $rollbackErrors[] = "Verifikasi direktori setelah mkdir gagal: $normBuild";
+                          return false;
+                      }
+                      $realCreated = realpath($normBuild);
+                      if ($realCreated === false || is_link($realCreated)) {
+                          $rollbackErrors[] = "Verifikasi canonical path setelah mkdir gagal: $normBuild";
+                          return false;
+                      }
+                      if ($canonPermitted !== null) {
+                          $normCreated = str_replace('\\', '/', $realCreated);
+                          $isStillInside = ($canonPermitted === '/' ? str_starts_with($normCreated, '/') :
+                              (preg_match('#^[a-zA-Z]:/$#', $canonPermitted) ? str_starts_with($normCreated, $canonPermitted) :
+                                  ($normCreated === $canonPermitted || str_starts_with($normCreated, $canonPermitted . '/'))));
+                          if (!$isStillInside) {
+                              $rollbackErrors[] = "Direktori yang baru dibuat berada di luar permitted root: $normBuild";
+                              return false;
+                          }
+                      }
+                      if (!@chmod($normBuild, 0755)) {
+                          $rollbackErrors[] = "Gagal chmod direktori: $normBuild";
+                          return false;
+                      }
+                  }
+              }
+
+              return true;
+          };
+
+          $validateAndPrepareAncestors = function (string $targetPath, string $baseRoot) use (&$rollbackErrors, $isHierarchySymlinkFree, $resolveCanonicalPathSafe, $prepareDirectorySafely): bool {
+              // 1. Validasi base root: harus ada, direktori biasa, bukan symlink
+              if (is_link($baseRoot) || !is_dir($baseRoot)) {
+                  $rollbackErrors[] = "Base root rollback tidak valid atau merupakan symlink: $baseRoot";
+                  return false;
+              }
+              $canonBase = realpath($baseRoot);
+              if ($canonBase === false || is_link($canonBase) || !is_dir($canonBase)) {
+                  $rollbackErrors[] = "Gagal memvalidasi canonical path base root: $baseRoot";
+                  return false;
+              }
+              if (!$isHierarchySymlinkFree($canonBase)) {
+                  $rollbackErrors[] = "Ancestor base root memiliki symlink: $baseRoot";
+                  return false;
+              }
+
+              $normBase = str_replace('\\', '/', $canonBase);
+              if ($normBase !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normBase)) {
+                  $normBase = rtrim($normBase, '/');
+              }
+              $basePrefix = ($normBase === '/' || preg_match('#^[a-zA-Z]:/$#', $normBase)) ? $normBase : ($normBase . '/');
+              $normTarget = str_replace('\\', '/', $targetPath);
+
+              if (strpos($normTarget, "\0") !== false) {
+                  $rollbackErrors[] = "Null-byte terdeteksi pada target rollback: $targetPath";
+                  return false;
+              }
+              foreach (explode('/', $normTarget) as $seg) {
+                  if ($seg === '..') {
+                      $rollbackErrors[] = "Path traversal '..' terdeteksi pada target rollback: $targetPath";
+                      return false;
+                  }
+              }
+
+              if (!preg_match('#^([a-zA-Z]:/|/)#', $normTarget)) {
+                  $rollbackErrors[] = "Target rollback harus berupa path absolut: $targetPath";
+                  return false;
+              }
+
+              $normTarget = preg_replace('#/{2,}#', '/', $normTarget);
+              $normTarget = rtrim($normTarget, '/');
+
+              // $basePrefix sudah dihitung aman
+              if (!str_starts_with($normTarget, $basePrefix)) {
+                  $rollbackErrors[] = "Target rollback berada di luar batas base root aman: $targetPath (base: $normBase)";
+                  return false;
+              }
+
+              $parent = dirname($normTarget);
+              $ancestors = [];
+              while (strlen($parent) > strlen($normBase)) {
+                  if (!str_starts_with($parent, $basePrefix)) {
+                      $rollbackErrors[] = "Ancestor path keluar dari batas aman base root: $parent";
+                      return false;
+                  }
+                  $ancestors[] = $parent;
+                  $grandparent = dirname($parent);
+                  if ($grandparent === $parent) break;
+                  $parent = $grandparent;
+              }
+              $ancestors = array_reverse($ancestors);
+
+              foreach ($ancestors as $ancestor) {
+                  if (!str_starts_with($ancestor, $basePrefix)) {
+                      $rollbackErrors[] = "Ancestor dilarang menyentuh atau melampaui base root: $ancestor";
+                      return false;
+                  }
+                  if (is_link($ancestor)) {
+                      $rollbackErrors[] = "Ancestor symlink terdeteksi di dalam batas target (dilarang dihapus otomatis / diikuti): $ancestor";
+                      return false;
+                  }
+                  if (!is_dir($ancestor)) {
+                      if (!mkdir($ancestor, 0755) && !is_dir($ancestor)) {
+                          $rollbackErrors[] = "Gagal membuat direktori ancestor: $ancestor";
+                          return false;
+                      }
+                      if (!chmod($ancestor, 0755)) {
+                          $rollbackErrors[] = "Gagal chmod direktori ancestor: $ancestor";
+                          return false;
+                      }
+                  }
+              }
+              return true;
+          };
+
+          $preflightBackupSource = function (
+              string $bDir,
+              ?array $manifest = null,
+              string $relPrefix = '',
+              array $excludedEntries = [],
+              bool $requireManifest = true
+          ) use (
+              &$preflightBackupSource,
+              &$rollbackErrors,
+              $scanDirSafely,
+              $isHierarchySymlinkFree,
+              $resolveCanonicalPathSafe
+          ): bool {
+              if (is_link($bDir)) {
+                  $rollbackErrors[] = "Preflight: Backup direktori berupa symlink: $bDir";
+                  return false;
+              }
+              if (!is_dir($bDir)) {
+                  $rollbackErrors[] = "Preflight: Backup direktori tidak ditemukan atau bukan direktori: $bDir";
+                  return false;
+              }
+              if (!$isHierarchySymlinkFree($bDir)) {
+                  $rollbackErrors[] = "Preflight: Backup direktori memiliki ancestor symlink: $bDir";
+                  return false;
+              }
+
+              $excludedEntries = array_merge($excludedEntries, ['manifest.json']);
+
+              // Di tingkat akar, jika $manifest null, muat dari berkas manifest.json
+              if ($relPrefix === '' && $manifest === null) {
+                  $manifestPath = $bDir . '/manifest.json';
+                  if (!file_exists($manifestPath)) {
+                      if ($requireManifest) {
+                          $rollbackErrors[] = "Preflight: Manifest wajib tersedia dan tidak ditemukan pada backup: $bDir";
+                          return false;
+                      }
+                  } else {
+                      if (is_link($manifestPath)) {
+                          $rollbackErrors[] = "Preflight: Manifest berupa symlink (dilarang): $manifestPath";
+                          return false;
+                      }
+                      if (!is_file($manifestPath)) {
+                          $rollbackErrors[] = "Preflight: Manifest harus berupa regular file: $manifestPath";
+                          return false;
+                      }
+                      $jsonRaw = @file_get_contents($manifestPath);
+                      if ($jsonRaw === false) {
+                          $rollbackErrors[] = "Preflight: Gagal membaca file_get_contents berkas manifest: $manifestPath";
+                          return false;
+                      }
+                      $manifest = json_decode($jsonRaw, true);
+                      if (json_last_error() !== JSON_ERROR_NONE || !is_array($manifest)) {
+                          $rollbackErrors[] = "Preflight: Format JSON manifest rusak atau bukan array: $manifestPath (JSON error: " . json_last_error_msg() . ")";
+                          return false;
+                      }
+                  }
+              }
+
+              if ($relPrefix === '' && $requireManifest) {
+                  if ($manifest === null || (is_array($manifest) && empty($manifest))) {
+                      $rollbackErrors[] = "Preflight: Manifest wajib tersedia dan tidak boleh kosong untuk backup: $bDir";
+                      return false;
+                  }
+              }
+
+              $entries = $scanDirSafely($bDir, $scanErr);
+              if ($entries === null) {
+                  $rollbackErrors[] = "Preflight: Gagal membaca direktori backup: $bDir (" . ($scanErr ?: 'unknown') . ")";
+                  return false;
+              }
+
+              foreach ($entries as $entry) {
+                  if (in_array($entry, $excludedEntries, true)) {
+                      continue;
+                  }
+
+                  $bPath = $bDir . '/' . $entry;
+                  $entryRel = $relPrefix === '' ? $entry : ($relPrefix . '/' . $entry);
+
+                  // A. Larangan keras symlink pada backup (zero-symlink policy)
+                  if (is_link($bPath)) {
+                      $rollbackErrors[] = "Preflight: Symlink dilarang dalam backup (zero-symlink policy): $bPath";
+                      return false;
+                  }
+
+                  // B. Validasi tipe filesystem (hanya file reguler dan direktori biasa)
+                  $bType = @filetype($bPath);
+                  if ($bType !== 'file' && $bType !== 'dir') {
+                      $rollbackErrors[] = "Preflight: Jenis filesystem khusus dilarang dalam backup (tipe: " . ($bType ?: 'unknown') . "): $bPath";
+                      return false;
+                  }
+
+                  // Bi-directional check: setiap entri di disk harus ada di manifest
+                  if ($manifest !== null) {
+                      if (!isset($manifest[$entryRel])) {
+                          $rollbackErrors[] = "Preflight: Berkas/direktori backup tambahan tidak terdaftar dalam manifest: $bPath (rel: $entryRel)";
+                          return false;
+                      }
+                  }
+
+                  if (is_dir($bPath)) {
+                      if ($manifest !== null) {
+                          if (($manifest[$entryRel]['type'] ?? '') !== 'dir') {
+                              $rollbackErrors[] = "Preflight: Konflik tipe direktori vs manifest: $entryRel";
+                              return false;
+                          }
+                      }
+                      if (!$preflightBackupSource($bPath, $manifest, $entryRel, [], false)) {
+                          return false;
+                      }
+                  } elseif (is_file($bPath) && $bType === 'file') {
+                      if ($manifest !== null) {
+                          $meta = $manifest[$entryRel];
+                          if (!is_array($meta) || ($meta['type'] ?? '') !== 'file') {
+                              $rollbackErrors[] = "Preflight: Metadata manifest bukan file: $entryRel";
+                              return false;
+                          }
+                          if (!isset($meta['size']) || !is_int($meta['size']) || $meta['size'] < 0) {
+                              $rollbackErrors[] = "Preflight: Metadata size cacat (wajib integer nonnegatif): $entryRel";
+                              return false;
+                          }
+                          $expectedHash = $meta['hash'] ?? ($meta['sha256'] ?? null);
+                          if (!is_string($expectedHash) || !preg_match('/^[a-f0-9]{64}$/i', $expectedHash)) {
+                              $rollbackErrors[] = "Preflight: Metadata hash SHA-256 cacat (wajib 64 hex characters): $entryRel";
+                              return false;
+                          }
+
+                          $actualSize = @filesize($bPath);
+                          if ($actualSize === false) {
+                              $rollbackErrors[] = "Preflight: Gagal membaca filesize berkas backup: $bPath";
+                              return false;
+                          }
+                          if ($actualSize !== $meta['size']) {
+                              $rollbackErrors[] = "Preflight: Ukuran berkas backup tidak cocok dengan manifest: $bPath (actual: $actualSize, expected: " . $meta['size'] . ")";
+                              return false;
+                          }
+
+                          $actualHash = @hash_file('sha256', $bPath);
+                          if ($actualHash === false) {
+                              $rollbackErrors[] = "Preflight: Gagal menghitung hash_file berkas backup: $bPath";
+                              return false;
+                          }
+                          if (strtolower($actualHash) !== strtolower($expectedHash)) {
+                              $rollbackErrors[] = "Preflight: Hash SHA-256 berkas backup tidak cocok dengan manifest: $bPath";
+                              return false;
+                          }
+                      }
+                  } else {
+                      $rollbackErrors[] = "Preflight: Entri backup bukan file reguler: $bPath";
+                      return false;
+                  }
+              }
+
+              // D. Verifikasi kelengkapan manifest: Pastikan seluruh file & direktori di manifest valid dan ada di backup
+              if ($relPrefix === '' && $manifest !== null) {
+                  $normalizedSeen = [];
+                  foreach ($manifest as $mRel => $mMeta) {
+                      if (!is_string($mRel)) {
+                          $rollbackErrors[] = "Preflight: Kunci manifest bukan string";
+                          return false;
+                      }
+                      if (strpos($mRel, "\0") !== false) {
+                          $rollbackErrors[] = "Preflight: Null byte pada kunci manifest: $mRel";
+                          return false;
+                      }
+                      if (str_starts_with($mRel, '/') || str_starts_with($mRel, '\\')) {
+                          $rollbackErrors[] = "Preflight: Leading slash pada kunci manifest: $mRel";
+                          return false;
+                      }
+                      if (preg_match('/^[a-zA-Z]:/', $mRel)) {
+                          $rollbackErrors[] = "Preflight: Drive letter pada kunci manifest: $mRel";
+                          return false;
+                      }
+                      if (str_starts_with($mRel, '//') || str_starts_with($mRel, '\\\\')) {
+                          $rollbackErrors[] = "Preflight: UNC path pada kunci manifest: $mRel";
+                          return false;
+                      }
+                      if (str_contains($mRel, '//') || str_contains($mRel, '\\\\')) {
+                          $rollbackErrors[] = "Preflight: Duplicate slashes pada kunci manifest: $mRel";
+                          return false;
+                      }
+
+                      $parts = explode('/', str_replace('\\', '/', $mRel));
+                      foreach ($parts as $p) {
+                          if ($p === '..' || $p === '.') {
+                              $rollbackErrors[] = "Preflight: Traversal '..' atau '.' pada kunci manifest: $mRel";
+                              return false;
+                          }
+                      }
+
+                      $normMRel = implode('/', $parts);
+                      if (isset($normalizedSeen[$normMRel])) {
+                          $rollbackErrors[] = "Preflight: Duplikat path setelah normalisasi pada manifest: $mRel";
+                          return false;
+                      }
+                      $normalizedSeen[$normMRel] = true;
+                      $normMRelLower = strtolower($normMRel);
+                      if (isset($normalizedSeenLower[$normMRelLower])) {
+                          $rollbackErrors[] = "Preflight: Duplikat path case-insensitive pada manifest: $mRel";
+                          return false;
+                      }
+                      $normalizedSeenLower[$normMRelLower] = true;
+
+                      $topSegment = $parts[0];
+                      if (in_array($topSegment, $excludedEntries, true)) {
+                          continue;
+                      }
+
+                      $expectedPath = $bDir . '/' . $normMRel;
+                      $canonExpected = $resolveCanonicalPathSafe($expectedPath, $canonErr, $bDir);
+                      if ($canonExpected === null) {
+                          $rollbackErrors[] = "Preflight: Entri manifest berada di luar backup root atau path tidak aman: $mRel (" . ($canonErr ?: 'unknown') . ")";
+                          return false;
+                      }
+
+                      if (!is_array($mMeta)) {
+                          $rollbackErrors[] = "Preflight: Entri manifest bukan array: $mRel";
+                          return false;
+                      }
+
+                      $mType = $mMeta['type'] ?? '';
+                      if ($mType !== 'file' && $mType !== 'dir') {
+                          $rollbackErrors[] = "Preflight: Entri manifest memiliki tipe tidak dikenal ('" . ($mType ?: 'null') . "'): $mRel";
+                          return false;
+                      }
+
+                      if ($mType === 'dir') {
+                          if (!is_dir($expectedPath) || is_link($expectedPath)) {
+                              $rollbackErrors[] = "Preflight: Direktori manifest hilang atau berupa symlink dalam backup: $mRel";
+                              return false;
+                          }
+                      } elseif ($mType === 'file') {
+                          if (!is_file($expectedPath) || is_link($expectedPath)) {
+                              $rollbackErrors[] = "Preflight: Berkas manifest hilang dari direktori backup: $mRel";
+                              return false;
+                          }
+                          if (!isset($mMeta['size']) || !is_int($mMeta['size']) || $mMeta['size'] < 0) {
+                              $rollbackErrors[] = "Preflight: Metadata manifest berkas cacat (size integer nonnegatif wajib): $mRel";
+                              return false;
+                          }
+                          $expHash = $mMeta['hash'] ?? ($mMeta['sha256'] ?? null);
+                          if (!is_string($expHash) || !preg_match('/^[a-f0-9]{64}$/i', $expHash)) {
+                              $rollbackErrors[] = "Preflight: Metadata SHA-256 cacat (wajib 64-karakter hex): $mRel";
+                              return false;
+                          }
+                          $actSize = @filesize($expectedPath);
+                          if ($actSize === false) {
+                              $rollbackErrors[] = "Preflight: Gagal membaca filesize berkas backup: $mRel";
+                              return false;
+                          }
+                          if ($actSize !== $mMeta['size']) {
+                              $rollbackErrors[] = "Preflight: Ukuran berkas backup tidak cocok dengan manifest: $mRel (actual: $actSize, expected: " . $mMeta['size'] . ")";
+                              return false;
+                          }
+                          $actHash = @hash_file('sha256', $expectedPath);
+                          if ($actHash === false) {
+                              $rollbackErrors[] = "Preflight: Gagal menghitung hash_file berkas backup: $mRel";
+                              return false;
+                          }
+                          if (strtolower($actHash) !== strtolower($expHash)) {
+                              $rollbackErrors[] = "Preflight: Hash SHA-256 berkas backup tidak cocok dengan manifest: $mRel";
+                              return false;
+                          }
+                      }
+                  }
+              }
+
+              return true;
+          };
+
+          $restoreExactDirectory = function (
+              string $bDir,
+              string $tDir,
+              ?string $permittedRoot = null,
+              ?array $manifest = null,
+              string $relPrefix = '',
+              array $excludedEntries = []
+          ) use (
+              &$restoreExactDirectory,
+              &$rollbackErrors,
+              $deleteRecursiveNoSymlinkFollow,
+              $validateAndPrepareAncestors,
+              $isHierarchySymlinkFree,
+              $scanDirSafely,
+              $preflightBackupSource,
+              $resolveCanonicalPathSafe,
+              $prepareDirectorySafely
+          ): bool {
+              if ($permittedRoot === null) {
+                  $permittedRoot = $tDir;
+              }
+
+              // 0. PREFLIGHT SEBELUM MENGUBAH TARGET (Dijalankan di tingkat akar / $relPrefix === '')
+              if ($relPrefix === '') {
+                  if (!$preflightBackupSource($bDir, $manifest, '', $excludedEntries)) {
+                      $rollbackErrors[] = "Preflight backup gagal, membatalkan rollback sebelum target diubah: $bDir";
+                      return false;
+                  }
+              }
+
+              // 1. Validasi backup source: tidak boleh symlink, harus direktori biasa, hierarki symlink-free
+              if (is_link($bDir)) {
+                  $rollbackErrors[] = "Sumber backup direktori berupa symlink (dilarang): $bDir";
+                  return false;
+              }
+              if (!is_dir($bDir)) {
+                  $rollbackErrors[] = "Sumber backup direktori tidak ditemukan atau bukan direktori: $bDir";
+                  return false;
+              }
+              if (!$isHierarchySymlinkFree($bDir)) {
+                  $rollbackErrors[] = "Sumber backup direktori memiliki ancestor symlink: $bDir";
+                  return false;
+              }
+
+              // 2. Validasi dan resolusi permitted root menggunakan ancestor yang ada
+              $canonPermitted = $resolveCanonicalPathSafe($permittedRoot, $permErr);
+              if ($canonPermitted === null) {
+                  $rollbackErrors[] = "Permitted root tidak valid atau gagal divalidasi melalui ancestor yang ada: $permittedRoot (" . ($permErr ?: 'unknown') . ")";
+                  return false;
+              }
+              if (!is_dir($canonPermitted)) {
+                  if (!$prepareDirectorySafely($canonPermitted)) {
+                      return false;
+                  }
+              }
+
+              // 3. Validasi dan resolusi target direktori
+              $resolvedTDir = $resolveCanonicalPathSafe($tDir, $tErr);
+              if ($resolvedTDir === null) {
+                  $rollbackErrors[] = "Target direktori tidak valid atau gagal divalidasi melalui ancestor yang ada: $tDir (" . ($tErr ?: 'unknown') . ")";
+                  return false;
+              }
+
+              $normPermitted = str_replace('\\', '/', $canonPermitted);
+              if ($normPermitted !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normPermitted)) {
+                  $normPermitted = rtrim($normPermitted, '/');
+              }
+              $normTDir = str_replace('\\', '/', $resolvedTDir);
+              if ($normTDir !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normTDir)) {
+                  $normTDir = rtrim($normTDir, '/');
+              }
+              $isInsidePermitted = false;
+              if ($normPermitted === '/') {
+                  $isInsidePermitted = str_starts_with($normTDir, '/');
+              } elseif (preg_match('#^[a-zA-Z]:/$#', $normPermitted)) {
+                  $isInsidePermitted = ($normTDir === $normPermitted || str_starts_with($normTDir, $normPermitted));
+              } else {
+                  $isInsidePermitted = ($normTDir === $normPermitted || str_starts_with($normTDir, $normPermitted . '/'));
+              }
+              if (!$isInsidePermitted) {
+                  $rollbackErrors[] = "Target direktori berada di luar permitted root: $tDir (root: $normPermitted)";
+                  return false;
+              }
+
+              // 4. Perlindungan jika tDir adalah symlink
+              if (is_link($tDir)) {
+                  if (!unlink($tDir)) {
+                      $rollbackErrors[] = "Gagal menghapus symlink pada target direktori rollback: $tDir";
+                      return false;
+                  }
+              }
+              if (is_link($tDir)) {
+                  $rollbackErrors[] = "Target direktori rollback masih berupa symlink: $tDir";
+                  return false;
+              }
+
+              // 5. Buat direktori target dengan aman jika belum ada
+              if (!is_dir($tDir)) {
+                  if (!$prepareDirectorySafely($tDir)) {
+                      return false;
+                  }
+              }
+
+              // 5. Hapus entri di target yang TIDAK ADA di backup (kecualikan $excludedEntries)
+              $targetEntries = $scanDirSafely($tDir, $targetScanErr);
+              if ($targetEntries === null) {
+                  $rollbackErrors[] = "Gagal membuka direktori target saat rollback: $tDir (" . ($targetScanErr ?: 'unknown') . ")";
+                  return false;
+              }
+
+              foreach ($targetEntries as $entry) {
+                  if (in_array($entry, $excludedEntries, true)) {
+                      continue;
+                  }
+
+                  $tPath = $tDir . '/' . $entry;
+                  $bPath = $bDir . '/' . $entry;
+
+                  // Validasi ancestor target sebelum operasi apapun pada tPath
+                  if (!$isHierarchySymlinkFree(dirname($tPath))) {
+                      $rollbackErrors[] = "Ancestor tPath memiliki symlink: $tPath";
+                      return false;
+                  }
+
+                  // Prioritaskan pemeriksaan is_link() SEBELUM is_dir()
+                  if (is_link($tPath)) {
+                      if (!file_exists($bPath)) {
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal unlink symlink target tak terdaftar: $tPath";
+                              return false;
+                          }
+                      } else {
+                          // Karena backup dilarang memuat symlink, symlink pada target selalu dihapus
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal unlink symlink target konflik tipe: $tPath";
+                              return false;
+                          }
+                      }
+                  } elseif (is_dir($tPath)) {
+                      if (!file_exists($bPath)) {
+                          if (!$deleteRecursiveNoSymlinkFollow($tPath)) {
+                              return false;
+                          }
+                      } elseif (is_file($bPath)) {
+                          if (!$deleteRecursiveNoSymlinkFollow($tPath)) {
+                              return false;
+                          }
+                      }
+                  } else {
+                      if (!file_exists($bPath)) {
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal unlink berkas target tak terdaftar: $tPath";
+                              return false;
+                          }
+                      } elseif (is_dir($bPath)) {
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal unlink berkas konflik tipe: $tPath";
+                              return false;
+                          }
+                      }
+                  }
+              }
+
+              // 6. Pulihkan seluruh entri dari backup ke target
+              $backupEntries = $scanDirSafely($bDir, $backupScanErr);
+              if ($backupEntries === null) {
+                  $rollbackErrors[] = "Gagal membuka direktori backup saat rollback: $bDir (" . ($backupScanErr ?: 'unknown') . ")";
+                  return false;
+              }
+
+              foreach ($backupEntries as $entry) {
+                  if (in_array($entry, $excludedEntries, true)) {
+                      continue;
+                  }
+
+                  $bPath = $bDir . '/' . $entry;
+                  $tPath = $tDir . '/' . $entry;
+                  $entryRel = $relPrefix === '' ? $entry : ($relPrefix . '/' . $entry);
+
+                  // Sebelum operasi apapun pada tPath: validasi seluruh ancestor tPath di dalam permittedRoot!
+                  if (!$validateAndPrepareAncestors($tPath, $canonPermitted)) {
+                      $rollbackErrors[] = "Validasi ancestor gagal untuk path target: $tPath";
+                      return false;
+                  }
+
+                  // TOLAK SELURUH SYMLINK PADA BACKUP (ZERO-SYMLINK POLICY)
+                  if (is_link($bPath)) {
+                      $rollbackErrors[] = "Symlink dilarang dalam sumber backup (kebijakan keamanan ketat): $bPath";
+                      return false;
+                  }
+
+                  // Validasi tipe filesystem entri backup sebelum operasi apapun:
+                  $bType = @filetype($bPath);
+                  if ($bType !== 'file' && $bType !== 'dir') {
+                      $rollbackErrors[] = "Jenis filesystem khusus dilarang dalam backup (tipe: " . ($bType ?: 'unknown') . "): $bPath";
+                      return false;
+                  }
+
+                  if (is_dir($bPath)) {
+                      if (is_link($tPath)) {
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal menghapus symlink pada target sebelum memulihkan direktori: $tPath";
+                              return false;
+                          }
+                      }
+                      if (is_link($tPath)) {
+                          $rollbackErrors[] = "Target path masih berupa symlink sebelum rekursi direktori: $tPath";
+                          return false;
+                      }
+                      $subOk = $restoreExactDirectory($bPath, $tPath, $canonPermitted, $manifest, $entryRel, []);
+                      if (!$subOk) {
+                          return false;
+                      }
+                  } elseif (is_file($bPath) && $bType === 'file') {
+                      if (is_link($tPath)) {
+                          if (!unlink($tPath)) {
+                              $rollbackErrors[] = "Gagal unlink symlink target sebelum menyalin berkas: $tPath";
+                              return false;
+                          }
+                      } elseif (is_dir($tPath)) {
+                          if (!$deleteRecursiveNoSymlinkFollow($tPath)) {
+                              return false;
+                          }
+                          if (file_exists($tPath) || is_link($tPath)) {
+                              $rollbackErrors[] = "Gagal menghapus direktori target sebelum menyalin berkas: $tPath";
+                              return false;
+                          }
+                      }
+                      if (is_link($tPath)) {
+                          $rollbackErrors[] = "Target path masih berupa symlink sebelum menyalin berkas: $tPath";
+                          return false;
+                      }
+
+                      if (!copy($bPath, $tPath)) {
+                          $rollbackErrors[] = "Gagal menyalin pemulihan berkas: $bPath -> $tPath";
+                          return false;
+                      }
+                      if (!chmod($tPath, 0644)) {
+                          $rollbackErrors[] = "Gagal chmod pemulihan berkas: $tPath";
+                          return false;
+                      }
+
+                      // Verifikasi pasca-copy anti-TOCTOU: pastikan target bukan symlink dan tetap dalam permitted root
+                      if (is_link($tPath)) {
+                          $rollbackErrors[] = "Target berkas terdeteksi sebagai symlink setelah penyalinan: $tPath";
+                          return false;
+                      }
+                      $realCopied = realpath($tPath);
+                      if ($realCopied === false || is_link($realCopied)) {
+                          $rollbackErrors[] = "Gagal memverifikasi canonical path berkas target setelah penyalinan: $tPath";
+                          return false;
+                      }
+                      $normCopied = str_replace('\\', '/', $realCopied);
+                      $copiedInside = false;
+                      if ($normPermitted === '/') {
+                          $copiedInside = str_starts_with($normCopied, '/');
+                      } elseif (preg_match('#^[a-zA-Z]:/$#', $normPermitted)) {
+                          $copiedInside = str_starts_with($normCopied, $normPermitted);
+                      } else {
+                          $copiedInside = ($normCopied === $normPermitted || str_starts_with($normCopied, $normPermitted . '/'));
+                      }
+                      if (!$copiedInside) {
+                          $rollbackErrors[] = "Berkas target yang disalin berada di luar permitted root: $tPath";
+                          return false;
+                      }
+
+                      // Verifikasi pasca-copy: pastikan berkas target cocok dengan backup
+                      $targetHash = @hash_file('sha256', $tPath);
+                      $backupHash = @hash_file('sha256', $bPath);
+                      if ($targetHash === false || $targetHash !== $backupHash) {
+                          $rollbackErrors[] = "Hash berkas target tidak cocok dengan backup setelah penyalinan: $tPath";
+                          return false;
+                      }
+                  } else {
+                      $rollbackErrors[] = "Entri backup bukan regular file yang sah (tipe: " . ($bType ?: 'unknown') . "): $bPath";
+                      return false;
+                  }
+              }
+
+              return true;
+          };
+
+          $restoreAll = function () use (
+              $backupRoot,
+              $restoreExactDirectory,
+              $deleteRecursiveNoSymlinkFollow,
+              &$rollbackErrors,
+              $storageLink,
+              $wasStorageLinkInitially,
+              $initialStorageTarget,
+              $wasStoragePhysicalInitially,
+              $wasStorageEmptyPhysicalInitially,
+              &$physicalBackupPath,
+              &$storageStage,
+              &$backupIsVerified,
+              $STORAGE_STAGE_NOT_MODIFIED,
+              $STORAGE_STAGE_BACKUP_IN_PROGRESS,
+              $STORAGE_STAGE_BACKUP_VERIFIED,
+              $STORAGE_STAGE_MIGRATION_IN_PROGRESS,
+              $STORAGE_STAGE_SOURCE_REMOVED,
+              $STORAGE_STAGE_SYMLINK_CREATED,
+              $isHierarchySymlinkFree,
+              &$backupManifest,
+              &$sourceFilesForVerify,
+              $resolveCanonicalPathSafe,
+              $prepareDirectorySafely,
+              $ukkRapiRoot,
+              $stagingDir
+          ): bool {
+              $allOk = true;
+
+              // 1. Validasi backupRoot dan seluruh ancestor-nya
+              if (is_link($backupRoot) || !is_dir($backupRoot)) {
+                  $rollbackErrors[] = "backupRoot tidak valid atau merupakan symlink: $backupRoot";
+                  return false;
+              }
+              $canonBackupRoot = realpath($backupRoot);
+              if ($canonBackupRoot === false || is_link($canonBackupRoot) || !is_dir($canonBackupRoot)) {
+                  $rollbackErrors[] = "Gagal memverifikasi canonical path backupRoot: $backupRoot";
+                  return false;
+              }
+              if (!$isHierarchySymlinkFree($canonBackupRoot)) {
+                  $rollbackErrors[] = "backupRoot atau ancestor-nya mengandung symlink: $backupRoot";
+                  return false;
+              }
+
+              $normBackupRoot = str_replace('\\', '/', $canonBackupRoot);
+              if ($normBackupRoot !== '/' && !preg_match('#^[a-zA-Z]:/$#', $normBackupRoot)) {
+                  $normBackupRoot = rtrim($normBackupRoot, '/');
+              }
+              $backupRootPrefix = ($normBackupRoot === '/' || preg_match('#^[a-zA-Z]:/$#', $normBackupRoot)) ? $normBackupRoot : ($normBackupRoot . '/');
+
+              // 2. Pemulihan ukk_rapi
+              $ukkRapiBackup = ($normBackupRoot === '/' || preg_match('#^[a-zA-Z]:/$#', $normBackupRoot)) ? ($normBackupRoot . 'ukk_rapi') : ($normBackupRoot . '/ukk_rapi');
+              $ukkRapiTarget = $ukkRapiRoot;
+              $canonUkkTarget = $resolveCanonicalPathSafe($ukkRapiTarget, $ukkErr);
+              if ($canonUkkTarget !== null) {
+                  $ukkRapiTarget = $canonUkkTarget;
+              }
+              if (is_dir($ukkRapiBackup)) {
+                  $normUkkBackup = rtrim(str_replace('\\', '/', $ukkRapiBackup), '/');
+                  if (!str_starts_with($normUkkBackup, $backupRootPrefix)) {
+                      $rollbackErrors[] = "Direktori backup ukk_rapi berada di luar backupRoot: $ukkRapiBackup";
+                      $allOk = false;
+                  } elseif (!$isHierarchySymlinkFree($ukkRapiTarget)) {
+                      $rollbackErrors[] = "Target ukk_rapi memiliki ancestor symlink: $ukkRapiTarget";
+                      $allOk = false;
+                  } else {
+                      $ukkManifest = [];
+                      if (!empty($backupManifest)) {
+                          foreach ($backupManifest as $k => $v) {
+                              if (str_starts_with($k, 'ukk_rapi/')) {
+                                  $ukkManifest[substr($k, strlen('ukk_rapi/'))] = $v;
+                              }
+                          }
+                      }
+                      $ukkSuccess = $restoreExactDirectory($ukkRapiBackup, $ukkRapiTarget, $ukkRapiTarget, $ukkManifest);
+                      if (!$ukkSuccess) {
+                          $allOk = false;
+                          $rollbackErrors[] = "Pemulihan wajib direktori ukk_rapi gagal";
+                      }
+                  }
+              } else {
+                  $rollbackErrors[] = "Sumber backup wajib ukk_rapi tidak ditemukan: $ukkRapiBackup";
+                  $allOk = false;
+              }
+
+              // 3. Pemulihan public_html (Mengecualikan 'storage' agar symlink/direktori storage dikelola eksplisit)
+              $publicBackup = $normBackupRoot . '/public_html';
+              $publicTarget = dirname($storageLink);
+              $canonPublicTarget = $resolveCanonicalPathSafe($publicTarget, $pubErr);
+              if ($canonPublicTarget !== null) {
+                  $publicTarget = $canonPublicTarget;
+              }
+              if (is_dir($publicBackup)) {
+                  $normPubBackup = rtrim(str_replace('\\', '/', $publicBackup), '/');
+                  if (!str_starts_with($normPubBackup, $normBackupRoot . '/')) {
+                      $rollbackErrors[] = "Direktori backup public_html berada di luar backupRoot: $publicBackup";
+                      $allOk = false;
+                  } elseif (!$isHierarchySymlinkFree($publicTarget)) {
+                      $rollbackErrors[] = "Target public_html memiliki ancestor symlink: $publicTarget";
+                      $allOk = false;
+                  } else {
+                      $pubManifest = [];
+                      if (!empty($backupManifest)) {
+                          foreach ($backupManifest as $k => $v) {
+                              if (str_starts_with($k, 'public_html/')) {
+                                  $pubManifest[substr($k, strlen('public_html/'))] = $v;
+                              }
+                          }
+                      }
+                      $stagingBaseName = basename($stagingDir);
+                      $pubSuccess = $restoreExactDirectory(
+                          $publicBackup,
+                          $publicTarget,
+                          $publicTarget,
+                          $pubManifest,
+                          '',
+                          ['storage', $stagingBaseName, 'auto_extract.php', 'deploy_payload.zip']
+                      );
+                      if (!$pubSuccess) {
+                          $allOk = false;
+                          $rollbackErrors[] = "Pemulihan wajib direktori public_html gagal";
+                      }
+                  }
+              } else {
+                  $rollbackErrors[] = "Sumber backup wajib public_html tidak ditemukan: $publicBackup";
+                  $allOk = false;
+              }
+
+              // 4. Pemulihan kondisi storage awal secara eksplisit:
+              if ($wasStoragePhysicalInitially) {
+                  if ($storageStage === $STORAGE_STAGE_NOT_MODIFIED ||
+                      $storageStage === $STORAGE_STAGE_BACKUP_IN_PROGRESS ||
+                      $storageStage === $STORAGE_STAGE_BACKUP_VERIFIED ||
+                      $storageStage === $STORAGE_STAGE_MIGRATION_IN_PROGRESS
+                  ) {
+                      // Storage fisik awal belum pernah dihapus saat migrasi.
+                      // Karena restoreExactDirectory(public_html) mengecualikan 'storage',
+                      // direktori fisik awal dan seluruh file unggahan pengguna di dalamnya tetap utuh tanpa modifikasi.
+                      if (!is_dir($storageLink) || is_link($storageLink)) {
+                          $rollbackErrors[] = "Integritas storage fisik awal terganggu sebelum migrasi selesai: $storageLink";
+                          $allOk = false;
+                      }
+                  } elseif ($storageStage === $STORAGE_STAGE_SOURCE_REMOVED || $storageStage === $STORAGE_STAGE_SYMLINK_CREATED) {
+                      // Storage fisik telah dihapus saat migrasi dan harus dipulihkan
+                      if ($wasStorageEmptyPhysicalInitially) {
+                          // Storage fisik awalnya adalah direktori fisik kosong: pulihkan kembali sebagai direktori fisik kosong tanpa memerlukan berkas backup
+                          if (!$isHierarchySymlinkFree(dirname($storageLink))) {
+                              $rollbackErrors[] = "Target storageLink memiliki ancestor symlink: $storageLink";
+                              return false;
+                          }
+                          if (is_link($storageLink)) {
+                              if (!unlink($storageLink)) {
+                                  $rollbackErrors[] = "Gagal unlink symlink storage saat rollback direktori kosong: $storageLink";
+                                  return false;
+                              }
+                          } elseif (is_dir($storageLink)) {
+                              if (!$deleteRecursiveNoSymlinkFollow($storageLink)) {
+                                  $rollbackErrors[] = "Gagal menghapus direktori storage lama saat rollback direktori kosong: $storageLink";
+                                  return false;
+                              }
+                          } elseif (file_exists($storageLink)) {
+                              if (!unlink($storageLink)) {
+                                  $rollbackErrors[] = "Gagal unlink berkas non-link pada storageLink saat rollback: $storageLink";
+                                  return false;
+                              }
+                          }
+                          if (is_link($storageLink) || file_exists($storageLink)) {
+                              $rollbackErrors[] = "storageLink masih ada sebelum pembuatan direktori fisik kosong: $storageLink";
+                              return false;
+                          }
+                          if (!mkdir($storageLink, 0755, true) && !is_dir($storageLink)) {
+                              $rollbackErrors[] = "Gagal membuat ulang direktori fisik kosong storage: $storageLink";
+                              $allOk = false;
+                          } elseif (!chmod($storageLink, 0755)) {
+                              $rollbackErrors[] = "Gagal chmod direktori fisik kosong storage: $storageLink";
+                              $allOk = false;
+                          } elseif (is_link($storageLink) || !is_dir($storageLink)) {
+                              $rollbackErrors[] = "storageLink bukan direktori fisik yang valid setelah pemulihan kosong: $storageLink";
+                              $allOk = false;
+                          } else {
+                              // Pastikan direktori kosong tanpa entri liar
+                              $scanEmpty = scandir($storageLink);
+                              if ($scanEmpty === false) {
+                                  $rollbackErrors[] = "Gagal memindai direktori fisik storage saat verifikasi rollback kosong: $storageLink";
+                                  $allOk = false;
+                              } else {
+                                  $emptyEntries = array_diff($scanEmpty, ['.', '..']);
+                                  foreach ($emptyEntries as $stray) {
+                                      $strayPath = $storageLink . '/' . $stray;
+                                      if (is_link($strayPath) || is_file($strayPath)) {
+                                          if (!unlink($strayPath)) {
+                                              $rollbackErrors[] = "Gagal menghapus berkas liar saat pemulihan direktori fisik kosong: $strayPath";
+                                              $allOk = false;
+                                          }
+                                      } elseif (is_dir($strayPath)) {
+                                          if (!$deleteRecursiveNoSymlinkFollow($strayPath)) {
+                                              $rollbackErrors[] = "Gagal menghapus subdirektori liar saat pemulihan direktori fisik kosong: $strayPath";
+                                              $allOk = false;
+                                          }
+                                      }
+                                  }
+
+                                  // Verifikasi final: pastikan direktori benar-benar terbaca dan kosong
+                                  $finalScan = scandir($storageLink);
+                                  if ($finalScan === false) {
+                                      $rollbackErrors[] = "Gagal verifikasi final pembacaan direktori storage kosong: $storageLink";
+                                      $allOk = false;
+                                  } elseif (!empty(array_diff($finalScan, ['.', '..']))) {
+                                      $rollbackErrors[] = "Verifikasi direktori kosong gagal: direktori masih berisi entri liar: $storageLink";
+                                      $allOk = false;
+                                  }
+                              }
+                          }
+                      } elseif ($backupIsVerified === true &&
+                          $physicalBackupPath &&
+                          is_dir($physicalBackupPath) &&
+                          !is_link($physicalBackupPath)
+                      ) {
+                          $canonPhysicalBackup = realpath($physicalBackupPath);
+                          if ($canonPhysicalBackup === false || is_link($canonPhysicalBackup) || !is_dir($canonPhysicalBackup)) {
+                              $rollbackErrors[] = "Canonical physicalBackupPath tidak valid: $physicalBackupPath";
+                              return false;
+                          }
+                          if (!$isHierarchySymlinkFree($canonPhysicalBackup)) {
+                              $rollbackErrors[] = "physicalBackupPath memiliki ancestor symlink: $physicalBackupPath";
+                              return false;
+                          }
+                          if (!$isHierarchySymlinkFree(dirname($storageLink))) {
+                              $rollbackErrors[] = "Target storageLink memiliki ancestor symlink: $storageLink";
+                              return false;
+                          }
+
+                          if (is_link($storageLink)) {
+                              if (!unlink($storageLink)) {
+                                  $rollbackErrors[] = "Gagal unlink symlink storage saat rollback: $storageLink";
+                                  return false;
+                              }
+                          } elseif (is_dir($storageLink)) {
+                              if (!$deleteRecursiveNoSymlinkFollow($storageLink)) {
+                                  return false;
+                              }
+                          }
+                          if (is_link($storageLink)) {
+                              $rollbackErrors[] = "storageLink masih berupa symlink sebelum pemulihan direktori fisik: $storageLink";
+                              return false;
+                          }
+                          $physSuccess = $restoreExactDirectory($canonPhysicalBackup, $storageLink, $storageLink, $sourceFilesForVerify);
+                          if (!$physSuccess) {
+                              $allOk = false;
+                              $rollbackErrors[] = "Pemulihan wajib direktori storage fisik gagal";
+                          }
+                      } else {
+                          $rollbackErrors[] = "Tidak dapat memulihkan storage fisik: backup tidak terverifikasi atau direktori tidak ditemukan";
+                          $allOk = false;
+                      }
+                  }
+              } elseif ($wasStorageLinkInitially && $initialStorageTarget) {
+                  if (!$isHierarchySymlinkFree(dirname($storageLink))) {
+                      $rollbackErrors[] = "Target storageLink memiliki ancestor symlink saat pemulihan link: $storageLink";
+                      return false;
+                  }
+                  // Karena restoreExactDirectory(public_html) mengecualikan 'storage',
+                  // periksa apakah symlink sah masih ada dan mengarah ke target awal
+                  $currentIsLink = is_link($storageLink);
+                  $currentLinkTarget = $currentIsLink ? readlink($storageLink) : null;
+                  if (!$currentIsLink || $currentLinkTarget !== $initialStorageTarget) {
+                      if ($currentIsLink) {
+                          if (!unlink($storageLink)) {
+                              $rollbackErrors[] = "Gagal unlink symlink storage saat rollback: $storageLink";
+                              $allOk = false;
+                          }
+                      } elseif (is_dir($storageLink)) {
+                          if (!$deleteRecursiveNoSymlinkFollow($storageLink)) {
+                              $allOk = false;
+                          }
+                      } elseif (file_exists($storageLink)) {
+                          if (!unlink($storageLink)) {
+                              $rollbackErrors[] = "Gagal unlink berkas non-link pada target storageLink: $storageLink";
+                              $allOk = false;
+                          }
+                      }
+                      if (!file_exists($storageLink) && !is_link($storageLink)) {
+                          if (!symlink($initialStorageTarget, $storageLink)) {
+                              $rollbackErrors[] = "Gagal membuat ulang symlink awal: $storageLink -> $initialStorageTarget";
+                              $allOk = false;
+                          }
+                      }
+                  }
+              } else {
+                  // Kondisi awal storage tidak ada (bukan symlink dan bukan direktori)
+                  if (is_link($storageLink)) {
+                      if (!unlink($storageLink)) {
+                          $rollbackErrors[] = "Gagal unlink symlink storage tak terdaftar: $storageLink";
+                          $allOk = false;
+                      }
+                  } elseif (is_dir($storageLink)) {
+                      if (!$deleteRecursiveNoSymlinkFollow($storageLink)) {
+                          $allOk = false;
+                      }
+                  } elseif (file_exists($storageLink)) {
+                      if (!unlink($storageLink)) {
+                          $rollbackErrors[] = "Gagal unlink berkas storage tak terdaftar: $storageLink";
+                          $allOk = false;
+                      }
+                  }
+              }
+
+              if (!empty($rollbackErrors)) {
+                  $allOk = false;
+              }
+              return $allOk;
+          };
+
+          // Helper penanganan kegagalan terpadu: Rollback menyeluruh & pemulihan konsisten status maintenance
+          $deployCompleted = false;
+          $handleFailureAndRollback = function (string $failureCode, string $failureReason = '') use (
+              $restoreAll,
+              $cleanupStaging,
+              &$rollbackErrors,
+              $downFile,
+              $wasAlreadyInMaintenance,
+              $maintenancePayload,
+              &$deployCompleted
+          ) {
+              $deployCompleted = true; // Cegah pemanggilan ganda dari fungsi shutdown
+              $restoreSuccess = $restoreAll();
+              $cleanupStaging(true);
+
+              if ($restoreSuccess && empty($rollbackErrors)) {
+                  if (!$wasAlreadyInMaintenance) {
+                      if (file_exists($downFile)) {
+                          $unlinked = unlink($downFile);
+                          clearstatcache(true, $downFile);
+                          if (!$unlinked || file_exists($downFile)) {
+                              $restoreSuccess = false;
+                              $rollbackErrors[] = "Gagal memverifikasi pelepasan maintenance mode saat rollback: $downFile";
+                          }
+                      }
+                  } else {
+                      // Website awalnya memang maintenance: pastikan berkas down tetap ada & valid
+                      clearstatcache(true, $downFile);
+                      if (!file_exists($downFile)) {
+                          $putDown = file_put_contents($downFile, $maintenancePayload);
+                          $chmodDown = ($putDown !== false) ? chmod($downFile, 0644) : false;
+                          clearstatcache(true, $downFile);
+                          if ($putDown === false || !$chmodDown || !file_exists($downFile)) {
+                              $restoreSuccess = false;
+                              $rollbackErrors[] = "Gagal memulihkan status maintenance awal (gagal menulis berkas down): $downFile";
+                          }
+                      }
+                  }
+              } else {
+                  // Rollback gagal: demi keamanan pertahankan status maintenance
+                  clearstatcache(true, $downFile);
+                  if (!file_exists($downFile)) {
+                      $putDown = file_put_contents($downFile, $maintenancePayload);
+                      $chmodDown = ($putDown !== false) ? chmod($downFile, 0644) : false;
+                      clearstatcache(true, $downFile);
+                      if ($putDown === false || !$chmodDown || !file_exists($downFile)) {
+                          $rollbackErrors[] = "Gagal mempertahankan mode maintenance setelah rollback gagal (gagal menulis berkas down): $downFile";
+                      }
+                  }
+              }
+
+              http_response_code(500);
+              $errDetails = !empty($rollbackErrors) ? ' (Rollback errors: ' . implode('; ', $rollbackErrors) . ')' : '';
+              $rollbackStatus = ($restoreSuccess && empty($rollbackErrors)) ? ' [ROLLBACK_SUCCESSFUL]' : ' [ROLLBACK_FAILED]';
+              $message = $failureCode . ($failureReason !== '' ? ": $failureReason" : '') . $rollbackStatus . $errDetails;
+              die($message);
+          };
+
+          // Daftarkan shutdown function untuk menangani kematian proses mendadak / timeout (HTTP 504/508 / max_execution_time)
+          register_shutdown_function(function () use (&$deployCompleted, $handleFailureAndRollback) {
+              if (!$deployCompleted) {
+                  $err = error_get_last();
+                  $reason = $err ? ($err['message'] . ' in ' . $err['file'] . ':' . $err['line']) : 'Script terminated unexpectedly (Timeout/Killed by Web Server)';
+                  $handleFailureAndRollback('FATAL_SHUTDOWN', $reason);
+              }
+          });
+
+          // -------------------------------------------------------------
+          // EKSTRAKSI ZIP, MIGRASI STORAGE, DAN VERIFIKASI APLIKASI
+          // -------------------------------------------------------------
+          try {
+              $extracted = $zip->extractTo($extractPath);
+              $zip->close();
+
+              if ($extracted === TRUE) {
+                  // 1. Pastikan seluruh struktur direktori writable Laravel tetap tersedia
+                  $requiredWritableDirs = [
+                      $ukkRapiRoot . '/storage/app/public',
+                      $ukkRapiRoot . '/storage/framework/cache/data',
+                      $ukkRapiRoot . '/storage/framework/sessions',
+                      $ukkRapiRoot . '/storage/framework/views',
+                      $ukkRapiRoot . '/storage/logs',
+                      $ukkRapiRoot . '/bootstrap/cache',
+                  ];
+                  foreach ($requiredWritableDirs as $reqDir) {
+                      if (!is_dir($reqDir)) {
+                          if (!mkdir($reqDir, 0775, true) && !is_dir($reqDir)) {
+                              $handleFailureAndRollback('DIRECTORY_CREATION_FAILED', "Gagal membuat direktori writable $reqDir");
+                          }
+                          if (!chmod($reqDir, 0775)) {
+                              $handleFailureAndRollback('DIRECTORY_CREATION_FAILED', "Gagal chmod direktori writable $reqDir");
+                          }
+                      }
+                  }
+
+                  // 2. MIGRASI AMAN public_html/storage FISIK KE STORAGE LARAVEL
+                  $relativeTarget = '../ukk_rapi/storage/app/public';
+                  $appPublicDir = $ukkRapiRoot . '/storage/app/public';
+
+                  if (is_dir($storageLink) && !is_link($storageLink)) {
+                      $items = array_diff(scandir($storageLink) ?: [], ['.', '..']);
+                      if (!empty($items)) {
+                          // A. Validasi realpath dan tolak SELURUH symlink di dalam storage fisik demi keamanan maksimal
+                          $realStorageSource = realpath($storageLink);
+                          if ($realStorageSource === false || !is_dir($realStorageSource)) {
+                              $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', 'Gagal memvalidasi realpath direktori penyimpanan fisik sumber.');
+                          }
+
+                          $safeSourcePrefix = rtrim($realStorageSource, '/\\') . DIRECTORY_SEPARATOR;
+
+                          try {
+                              $itCheck = new RecursiveIteratorIterator(
+                                  new RecursiveDirectoryIterator($storageLink, RecursiveDirectoryIterator::SKIP_DOTS),
+                                  RecursiveIteratorIterator::SELF_FIRST
+                              );
+                              foreach ($itCheck as $checkItem) {
+                                  if ($checkItem->isLink()) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', 'Symlink dilarang berada di dalam storage fisik: ' . $checkItem->getPathname());
+                                  }
+                              }
+                          } catch (\Throwable $e) {
+                              $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', 'Gagal memindai direktori penyimpanan fisik: ' . $e->getMessage());
+                          }
+
+                          $storageStage = $STORAGE_STAGE_BACKUP_IN_PROGRESS;
+
+                          // B. Buat cadangan penuh di luar document root dengan nama unik bebas tabrakan
+                          $backupCounter = 0;
+                          do {
+                              $backupEntropy = bin2hex(random_bytes(4));
+                              $physicalBackupPath = $hostingRoot . '/storage_physical_backup_' . date('Ymd_His') . '_' . $backupEntropy . ($backupCounter > 0 ? '_' . $backupCounter : '');
+                              $backupCounter++;
+                          } while (file_exists($physicalBackupPath) || is_link($physicalBackupPath));
+
+                          $backupOk = true;
+                          $backupErrorsList = [];
+                          $copyPhysical = function ($s, $d) use (&$copyPhysical, &$backupOk, &$backupErrorsList) {
+                              try {
+                                  if (is_link($d)) {
+                                      if (!unlink($d)) {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Gagal unlink symlink target backup: $d";
+                                          return;
+                                      }
+                                  }
+                                  if (!is_dir($d)) {
+                                      if (!mkdir($d, 0755, true) && !is_dir($d)) {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Gagal mkdir backup storage: $d";
+                                          return;
+                                      }
+                                      if (!chmod($d, 0755)) {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Gagal chmod backup storage: $d";
+                                          return;
+                                      }
+                                  }
+                                  if (is_link($s)) {
+                                      $backupOk = false;
+                                      $backupErrorsList[] = "Symlink dilarang dalam storage fisik: $s";
+                                      return;
+                                  }
+
+                                  // Validasi tipe entri sumber: HANYA izinkan direktori biasa
+                                  $sourceType = @filetype($s);
+                                  if ($sourceType !== 'dir') {
+                                      $backupOk = false;
+                                      $backupErrorsList[] = "Entri sumber bukan direktori biasa (tipe: " . ($sourceType ?: 'unknown') . "): $s";
+                                      return;
+                                  }
+
+                                  $dh = opendir($s);
+                                  if ($dh === false) {
+                                      $backupOk = false;
+                                      $backupErrorsList[] = "Gagal opendir storage sumber: $s";
+                                      return;
+                                  }
+
+                                  while (true) {
+                                      error_clear_last();
+                                      $f = readdir($dh);
+                                      if ($f === false) {
+                                          $lastErr = error_get_last();
+                                          if ($lastErr !== null) {
+                                              $backupOk = false;
+                                              $backupErrorsList[] = "Kegagalan pembacaan direktori di tengah iterasi: $s (" . $lastErr['message'] . ")";
+                                          }
+                                          // Akhir pembacaan direktori
+                                          break;
+                                      }
+                                      if ($f === '.' || $f === '..') continue;
+                                      $sp = $s . '/' . $f;
+                                      $dp = $d . '/' . $f;
+
+                                      if (is_link($sp)) {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Symlink dilarang dalam storage fisik: $sp";
+                                          break;
+                                      }
+
+                                      // Tolak jenis filesystem khusus: FIFO, socket, block/char device, dll.
+                                      $entryType = @filetype($sp);
+                                      if ($entryType !== 'file' && $entryType !== 'dir') {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Jenis filesystem khusus dilarang (tipe: " . ($entryType ?: 'unknown') . "): $sp";
+                                          break;
+                                      }
+
+                                      if (is_dir($sp)) {
+                                          $copyPhysical($sp, $dp);
+                                          if (!$backupOk) break;
+                                      } elseif (is_file($sp) && $entryType === 'file') {
+                                          if (is_link($dp)) {
+                                              if (!unlink($dp)) {
+                                                  $backupOk = false;
+                                                  $backupErrorsList[] = "Gagal unlink symlink berkas backup: $dp";
+                                                  break;
+                                              }
+                                          }
+                                          if (!copy($sp, $dp)) {
+                                              $backupOk = false;
+                                              $backupErrorsList[] = "Gagal copy file backup: $sp -> $dp";
+                                              break;
+                                          }
+                                          if (!chmod($dp, 0644)) {
+                                              $backupOk = false;
+                                              $backupErrorsList[] = "Gagal chmod file backup: $dp";
+                                              break;
+                                          }
+                                      } else {
+                                          $backupOk = false;
+                                          $backupErrorsList[] = "Entri bukan regular file maupun direktori: $sp";
+                                          break;
+                                      }
+                                  }
+                                  closedir($dh);
+                              } catch (\Throwable $e) {
+                                  $backupOk = false;
+                                  $backupErrorsList[] = "Exception pada copyPhysical: " . $e->getMessage();
+                              }
+                          };
+                          // Hardening Root Backup: Pastikan path tujuan belum ada dan bukan symlink
+                          if (file_exists($physicalBackupPath) || is_link($physicalBackupPath)) {
+                              $handleFailureAndRollback('STORAGE_BACKUP_FAILED', "Path cadangan fisik sudah ada atau berupa symlink: $physicalBackupPath");
+                          }
+
+                          $copyPhysical($storageLink, $physicalBackupPath);
+
+                          // Hardening Root Backup: Pastikan setelah salin, root backup benar-benar sebuah direktori biasa dan bukan symlink
+                          if (is_link($physicalBackupPath) || !is_dir($physicalBackupPath)) {
+                              $backupOk = false;
+                              $backupErrorsList[] = "Root direktori cadangan tidak valid atau merupakan symlink setelah salin: $physicalBackupPath";
+                          }
+
+                          if (!$backupOk) {
+                              $handleFailureAndRollback('STORAGE_BACKUP_FAILED', implode('; ', $backupErrorsList));
+                          }
+
+                          // B.2. Verifikasi Integritas Cadangan Fisik Dua Arah (Bi-directional Verification)
+                          $backupVerified = true;
+                          $backupVerifyReason = '';
+
+                          $sourceFilesForVerify = [];
+                          $sourceDirsForVerify = [];
+                          try {
+                              $itSourceScan = new RecursiveIteratorIterator(
+                                  new RecursiveDirectoryIterator($storageLink, RecursiveDirectoryIterator::SKIP_DOTS),
+                                  RecursiveIteratorIterator::SELF_FIRST
+                              );
+                              foreach ($itSourceScan as $sItem) {
+                                  $relPath = substr($sItem->getPathname(), strlen($storageLink) + 1);
+                                  $relPath = str_replace('\\', '/', $relPath);
+                                  if ($sItem->isLink()) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Ditemukan symlink di dalam storage sumber: $relPath";
+                                      break;
+                                  }
+                                  if ($sItem->isDir()) {
+                                      $sourceDirsForVerify[$relPath] = true;
+                                      $sourceFilesForVerify[$relPath] = ['type' => 'dir'];
+                                  } else {
+                                      $itemRealPath = $sItem->getRealPath();
+                                      if ($itemRealPath === false || !file_exists($itemRealPath)) {
+                                          $backupVerified = false;
+                                          $backupVerifyReason = "Gagal membaca realpath berkas sumber: " . $sItem->getPathname();
+                                          break;
+                                      }
+                                      $itemHash = hash_file('sha256', $itemRealPath);
+                                      if ($itemHash === false) {
+                                          $backupVerified = false;
+                                          $backupVerifyReason = "Gagal menghitung hash SHA-256 sumber: " . $itemRealPath;
+                                          break;
+                                      }
+                                      $itemSize = @filesize($itemRealPath);
+                                      if ($itemSize === false) {
+                                          $backupVerified = false;
+                                          $backupVerifyReason = "Gagal membaca ukuran berkas sumber: " . $itemRealPath;
+                                          break;
+                                      }
+                                      $sourceFilesForVerify[$relPath] = [
+                                          'type' => 'file',
+                                          'size' => $itemSize,
+                                          'hash' => $itemHash,
+                                      ];
+                                  }
+                              }
+                          } catch (\Throwable $e) {
+                              $backupVerified = false;
+                              $backupVerifyReason = "Exception saat memindai direktori sumber: " . $e->getMessage();
+                          }
+
+                          // 1. Verifikasi arah maju: Semua direktori sumber harus ada di backup
+                          if ($backupVerified) {
+                              foreach ($sourceDirsForVerify as $rDir => $dummy) {
+                                  $bDirPath = $physicalBackupPath . '/' . $rDir;
+                                  if (is_link($bDirPath) || !is_dir($bDirPath)) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Direktori cadangan tidak sesuai struktur sumber atau merupakan tautan: $bDirPath";
+                                      break;
+                                  }
+                              }
+                          }
+
+                          // 2. Verifikasi arah maju: Semua berkas sumber harus ada, cocok ukuran & SHA-256
+                          if ($backupVerified) {
+                              foreach ($sourceFilesForVerify as $rel => $meta) {
+                                  $backupFilePath = $physicalBackupPath . '/' . $rel;
+                                  if (is_link($backupFilePath) || !file_exists($backupFilePath) || !is_file($backupFilePath)) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Berkas cadangan tidak ditemukan atau bukan berkas reguler: $backupFilePath";
+                                      break;
+                                  }
+                                  $bSize = @filesize($backupFilePath);
+                                  if ($bSize === false || $bSize !== $meta['size']) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Ukuran berkas cadangan tidak cocok: $backupFilePath (sumber: {$meta['size']}, cadangan: " . ($bSize === false ? 'Gagal' : $bSize) . ")";
+                                      break;
+                                  }
+                                  $bHash = @hash_file('sha256', $backupFilePath);
+                                  if ($bHash === false || $bHash !== $meta['hash']) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Hash SHA-256 berkas cadangan tidak cocok atau gagal dihitung: $backupFilePath";
+                                      break;
+                                  }
+                              }
+                          }
+
+                          // 3. Verifikasi arah balik (Reverse verification): Pastikan root bukan symlink dan TIDAK ADA file/folder liar tambahan atau symlink di backup
+                          if ($backupVerified) {
+                              if (is_link($physicalBackupPath) || !is_dir($physicalBackupPath)) {
+                                  $backupVerified = false;
+                                  $backupVerifyReason = "Root direktori cadangan tidak valid atau merupakan symlink sebelum iterator dibuka: $physicalBackupPath";
+                              } else {
+                                  try {
+                                      $itBackupScan = new RecursiveIteratorIterator(
+                                          new RecursiveDirectoryIterator($physicalBackupPath, RecursiveDirectoryIterator::SKIP_DOTS),
+                                          RecursiveIteratorIterator::SELF_FIRST
+                                      );
+                                      foreach ($itBackupScan as $bItem) {
+                                          $relBPath = substr($bItem->getPathname(), strlen($physicalBackupPath) + 1);
+                                          $relBPath = str_replace('\\', '/', $relBPath);
+                                          if ($bItem->isLink()) {
+                                              $backupVerified = false;
+                                              $backupVerifyReason = "Symlink dilarang berada di dalam direktori cadangan: $relBPath";
+                                              break;
+                                          }
+                                          if ($bItem->isDir()) {
+                                              if (!isset($sourceDirsForVerify[$relBPath])) {
+                                                  $backupVerified = false;
+                                                  $backupVerifyReason = "Ditemukan direktori tambahan tak dikenal di dalam cadangan: $relBPath";
+                                                  break;
+                                              }
+                                          } else {
+                                              if (!isset($sourceFilesForVerify[$relBPath])) {
+                                                  $backupVerified = false;
+                                                  $backupVerifyReason = "Ditemukan berkas tambahan tak dikenal di dalam cadangan: $relBPath";
+                                                  break;
+                                              }
+                                          }
+                                      }
+                                  } catch (\Throwable $e) {
+                                      $backupVerified = false;
+                                      $backupVerifyReason = "Exception saat memindai direktori cadangan: " . $e->getMessage();
+                                  }
+                              }
+                          }
+
+                          if (!$backupVerified) {
+                              $handleFailureAndRollback('STORAGE_BACKUP_VERIFICATION_FAILED', "$backupVerifyReason. Deployment dibatalkan.");
+                          }
+
+                          // Tandai bahwa backup telah berhasil diverifikasi secara penuh
+                          $storageStage = $STORAGE_STAGE_BACKUP_VERIFIED;
+                          $backupIsVerified = true;
+
+                          // C. Inventarisasi berkas sumber: catat relative path, size, dan SHA-256
+                          $storageStage = $STORAGE_STAGE_MIGRATION_IN_PROGRESS;
+                          $sourceCatalog = [];
+                          try {
+                              $itCatalog = new RecursiveIteratorIterator(
+                                  new RecursiveDirectoryIterator($storageLink, RecursiveDirectoryIterator::SKIP_DOTS)
+                              );
+                              foreach ($itCatalog as $sFile) {
+                                  if ($sFile->isDir()) continue;
+                                  $rel = substr($sFile->getPathname(), strlen($storageLink) + 1);
+                                  $rel = str_replace('\\', '/', $rel);
+                                  $fullPath = $sFile->getRealPath();
+                                  if ($fullPath === false || !file_exists($fullPath)) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal membaca realpath berkas sumber: " . $sFile->getPathname());
+                                  }
+                                  $fileHash = hash_file('sha256', $fullPath);
+                                  if ($fileHash === false) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal menghitung SHA-256 untuk: $fullPath");
+                                  }
+                                  $fileSize = @filesize($fullPath);
+                                  if ($fileSize === false) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal membaca ukuran berkas untuk: $fullPath");
+                                  }
+                                  $sourceCatalog[] = [
+                                      'rel' => $rel,
+                                      'full' => $fullPath,
+                                      'size' => $fileSize,
+                                      'hash' => $fileHash,
+                                      'destTarget' => null,
+                                  ];
+                              }
+                          } catch (\Throwable $e) {
+                              $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Exception saat katalogisasi berkas sumber: " . $e->getMessage());
+                          }
+
+                          // D. Migrasi berkas dengan deteksi konflik nama berulang
+                          foreach ($sourceCatalog as &$sourceItem) {
+                              $destTarget = $appPublicDir . '/' . $sourceItem['rel'];
+
+                              if (file_exists($destTarget)) {
+                                  $existingHash = hash_file('sha256', $destTarget);
+                                  if ($existingHash === $sourceItem['hash']) {
+                                      $sourceItem['destTarget'] = $destTarget;
+                                      continue;
+                                  }
+                                  // Konflik nama: counter unik agar tidak pernah menimpa file legacy lama
+                                  $info = pathinfo($destTarget);
+                                  $conflictIndex = 1;
+                                  do {
+                                      $legacyPath = $info['dirname'] . '/' . $info['filename'] . '_legacy_' . date('Ymd_His') . '_' . $conflictIndex . '.' . ($info['extension'] ?? '');
+                                      $conflictIndex++;
+                                  } while (file_exists($legacyPath));
+
+                                  $destTarget = $legacyPath;
+                              }
+
+                              $destDir = dirname($destTarget);
+                              if (!is_dir($destDir)) {
+                                  if (!mkdir($destDir, 0775, true) && !is_dir($destDir)) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal membuat folder tujuan: $destDir");
+                                  }
+                                  if (!chmod($destDir, 0775)) {
+                                      $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal chmod folder tujuan: $destDir");
+                                  }
+                              }
+
+                              if (!copy($sourceItem['full'], $destTarget)) {
+                                  $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal menyalin berkas migrasi: {$sourceItem['full']} -> $destTarget");
+                              }
+                              if (!chmod($destTarget, 0644)) {
+                                  $handleFailureAndRollback('STORAGE_MIGRATION_FAILED', "Gagal chmod berkas migrasi: $destTarget");
+                              }
+                              $sourceItem['destTarget'] = $destTarget;
+                          }
+                          unset($sourceItem);
+
+                          // E. Verifikasi Integritas Ulang SHA-256 Seluruh Berkas Hasil Migrasi
+                          $migrationVerified = true;
+                          $mismatchReason = '';
+                          foreach ($sourceCatalog as $srcCheck) {
+                              $assignedDest = $srcCheck['destTarget'];
+                              if (!$assignedDest || !file_exists($assignedDest)) {
+                                  $migrationVerified = false;
+                                  $mismatchReason = "Berkas tujuan tidak ditemukan: " . ($assignedDest ?: $srcCheck['rel']);
+                                  break;
+                              }
+                              $destSize = filesize($assignedDest);
+                              if ($destSize !== $srcCheck['size']) {
+                                  $migrationVerified = false;
+                                  $mismatchReason = "Ukuran berkas tidak cocok untuk: $assignedDest (sumber: {$srcCheck['size']}, tujuan: $destSize)";
+                                  break;
+                              }
+                              $destHash = hash_file('sha256', $assignedDest);
+                              if ($destHash !== $srcCheck['hash']) {
+                                  $migrationVerified = false;
+                                  $mismatchReason = "SHA-256 hash tidak cocok untuk: $assignedDest";
+                                  break;
+                              }
+                          }
+
+                          if (!$migrationVerified) {
+                              $handleFailureAndRollback('STORAGE_INTEGRITY_CHECK_FAILED', "$mismatchReason. Deployment dibatalkan.");
+                          }
+
+                          // F. Hapus direktori fisik lama HANYA setelah seluruh verifikasi hash berhasil
+                          $storageStage = $STORAGE_STAGE_SOURCE_REMOVED;
+                          $deleteRecursiveNoSymlinkFollow($storageLink);
+                          if (file_exists($storageLink) || is_link($storageLink)) {
+                              $handleFailureAndRollback('STORAGE_CLEANUP_FAILED', "Direktori fisik storage lama gagal dihapus setelah migrasi [stage: $storageStage]. Deployment dibatalkan.");
+                          }
+                      } else {
+                          if (!rmdir($storageLink)) {
+                              $handleFailureAndRollback('STORAGE_CLEANUP_FAILED', "Gagal menghapus folder fisik kosong: $storageLink [stage: $storageStage]");
+                          }
+                          $storageStage = $STORAGE_STAGE_SOURCE_REMOVED;
+                      }
+                  }
+
+                  // 3. Buat dan Verifikasi Symbolic Link public_html/storage (TANPA OPERATOR @)
+                  $storageStage = $STORAGE_STAGE_SYMLINK_CREATED;
+                  if (!is_link($storageLink) && !file_exists($storageLink)) {
+                      if (!symlink($relativeTarget, $storageLink)) {
+                          $handleFailureAndRollback('SYMLINK_FAILED', 'Gagal membuat symbolic link storage. Deployment dibatalkan.');
+                      }
+                  } elseif (is_link($storageLink)) {
+                      if (readlink($storageLink) !== $relativeTarget) {
+                          if (!unlink($storageLink)) {
+                              $handleFailureAndRollback('SYMLINK_FAILED', 'Gagal menghapus symlink usang. Deployment dibatalkan.');
+                          }
+                          if (!symlink($relativeTarget, $storageLink)) {
+                              $handleFailureAndRollback('SYMLINK_FAILED', 'Gagal memperbarui symbolic link storage. Deployment dibatalkan.');
+                          }
+                      }
+                  }
+
+                  // Verifikasi akhir symlink: Wajib valid
+                  if (!is_link($storageLink) || readlink($storageLink) !== $relativeTarget) {
+                      $handleFailureAndRollback('SYMLINK_VERIFICATION_FAILED', 'Symbolic link public/storage tidak valid. Deployment dibatalkan.');
+                  }
+
+                  // 4. Verifikasi berkas aplikasi hasil ekstraksi sebelum membuka maintenance mode
+                  if (!file_exists(__DIR__ . '/index.php') || !file_exists($ukkRapiRoot . '/bootstrap/app.php') || !is_dir($ukkRapiRoot . '/vendor')) {
+                      $handleFailureAndRollback('APPLICATION_INTEGRITY_VERIFICATION_FAILED', 'Berkas inti tidak lengkap setelah ekstraksi. Rollback telah dijalankan.');
+                  }
+
+                  // 5. Buka maintenance mode HANYA jika bukan maintenance pra-deployment dari Admin
+                  if (!$wasAlreadyInMaintenance && file_exists($downFile)) {
+                      $unlinked = unlink($downFile);
+                      clearstatcache(true, $downFile);
+                      if (!$unlinked || file_exists($downFile)) {
+                          $handleFailureAndRollback('MAINTENANCE_MODE_DEACTIVATION_FAILED', 'Gagal menghapus berkas down saat finalisasi.');
+                      }
+                  }
+
+                  // 6. Verifikasi akhir sebelum DEPLOY_SUCCESS: Pastikan website tidak dalam mode maintenance tanpa izin
+                  clearstatcache(true, $downFile);
+                  if (!$wasAlreadyInMaintenance && file_exists($downFile)) {
+                      $handleFailureAndRollback('DEPLOYMENT_VERIFICATION_FAILED', 'Website masih dalam mode maintenance.');
+                  }
+
+                  // 7. Bersihkan berkas staging & backup karena ekstraksi dan verifikasi berhasil sempurna
+                  $cleanupStaging(false);
+
+                  if (function_exists('opcache_reset')) {
+                      opcache_reset();
+                  }
+
+                  $deployCompleted = true;
+                  echo "DEPLOY_SUCCESS";
+              } else {
+                  // Ekstraksi gagal: Lakukan rollback dan tangani status maintenance secara aman
+                  $handleFailureAndRollback('EXTRACT_FAILED', 'Gagal mengekstrak berkas ZIP payload');
+              }
+          } catch (\Throwable $e) {
+              if (is_resource($zip) || $zip instanceof ZipArchive) {
+                  $zip->close();
+              }
+              $handleFailureAndRollback('EXTRACT_EXCEPTION', $e->getMessage());
           }
           EOF
 
-          # Compress menjadi 1 file payload .zip
+          # Gantikan placeholder dengan hash SHA-256 yang aman
+          sed -i "s/__EXPECTED_TOKEN_HASH__/${TOKEN_HASH}/g" deploy_package/public_html/auto_extract.php
+
+          # 7. Compress menjadi 1 berkas payload deploy_payload.zip (tanpa storage lokal)
           cd deploy_package
-          zip -rq ../deploy_payload.zip ukk_rapi public_html
+          zip -P "$DEPLOY_TOKEN" -rq ../deploy_payload.zip ukk_rapi public_html
           cd ..
 
-          # Siapkan folder upload FTP (HANYA 2 file: 1 zip + 1 php)
-          mkdir -p ftp_upload
-          mv deploy_package/public_html/auto_extract.php ftp_upload/
-          mv deploy_payload.zip ftp_upload/
+          # 8. Siapkan berkas probe unik untuk pengujian proteksi staging HTTP 403 langsung ke file
+          PROBE_ID=$(php -r 'echo bin2hex(random_bytes(8));')
+          PROBE_FILENAME="probe_${PROBE_ID}.txt"
+          echo "PROBE_FILENAME=${PROBE_FILENAME}" >> $GITHUB_ENV
 
-      - name: 🚀 Upload ZIP to cPanel via FTP
+          # 9. Tahap 1: Folder pelindung staging (.htaccess pelindung, berkas probe unik, & auto_extract.php)
+          mkdir -p ftp_stage1_shield/.deploy_staging
+          cat << 'HTACCESS_EOF' > ftp_stage1_shield/.deploy_staging/.htaccess
+          <IfModule mod_authz_core.c>
+              Require all denied
+          </IfModule>
+          <IfModule !mod_authz_core.c>
+              Order deny,allow
+              Deny from all
+          </IfModule>
+          HTACCESS_EOF
+
+          echo "STAGING_SHIELD_PROBE_ACTIVE" > "ftp_stage1_shield/.deploy_staging/${PROBE_FILENAME}"
+          cp deploy_package/public_html/auto_extract.php ftp_stage1_shield/
+
+          # 10. Tahap 2: Folder payload (Menyertakan auto_extract.php & .htaccess agar TIDAK dihapus oleh sinkronisasi FTP)
+          mkdir -p ftp_stage2_payload/.deploy_staging
+          cp ftp_stage1_shield/.deploy_staging/.htaccess ftp_stage2_payload/.deploy_staging/
+          cp deploy_package/public_html/auto_extract.php ftp_stage2_payload/
+          mv deploy_payload.zip ftp_stage2_payload/.deploy_staging/
+
+      - name: 🛡️ Stage 1: Upload Protection Shield via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftp
-          local-dir: ./ftp_upload/
+          local-dir: ./ftp_stage1_shield/
           server-dir: public_html/
 
-      - name: ⚡ Trigger Auto-Extract on cPanel
+      - name: 🔍 Verify Staging Shield Active (HTTP 403 on Probe File)
         run: |
-          echo "Extracting payload on server..."
-          RESPONSE=$(curl -k -L -s "http://ahmad-rapi.web.id/auto_extract.php?token=deploy_ukk_rapi_2026")
+          PROBE_URL="https://ahmad-rapi.web.id/.deploy_staging/${PROBE_FILENAME}"
+          echo "Memverifikasi proteksi HTTP staging melalui berkas probe spesifik: ${PROBE_URL}"
+
+          PROBE_HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" \
+            --proto "=https" \
+            --proto-redir "=https" \
+            --location \
+            --connect-timeout 15 \
+            --max-time 30 \
+            "${PROBE_URL}")
+
+          echo "HTTP Response Code untuk berkas probe: ${PROBE_HTTP_CODE}"
+
+          if [ "${PROBE_HTTP_CODE}" = "200" ]; then
+            echo "::error::KEGAGALAN KEAMANAN FATAL! Berkas probe dapat diakses publik (HTTP 200 OK). Aturan .htaccess tidak aktif di hosting. Upload payload dibatalkan demi keamanan."
+            exit 1
+          elif [ "${PROBE_HTTP_CODE}" = "404" ]; then
+            echo "::error::Pengujian tidak valid: Berkas probe tidak ditemukan di hosting (HTTP 404). Kemungkinan upload Stage 1 gagal. Upload dibatalkan."
+            exit 1
+          elif [ "${PROBE_HTTP_CODE}" != "403" ]; then
+            echo "::error::Folder staging belum terlindungi secara benar! Server merespons HTTP ${PROBE_HTTP_CODE} (wajib HTTP 403 Forbidden). Upload dibatalkan."
+            exit 1
+          fi
+
+          echo "✅ Proteksi shield .deploy_staging terverifikasi aktif (HTTP 403 Forbidden pada akses berkas langsung)."
+
+      - name: 📦 Stage 2: Upload Payload ZIP via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftp
+          local-dir: ./ftp_stage2_payload/
+          server-dir: public_html/
+
+      - name: ⚡ Stage 3: Trigger Secure Extraction on cPanel
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          echo "Extracting payload on server via secure HTTPS POST..."
+
+          if [ -z "$DEPLOY_TOKEN" ]; then
+            echo "::error::Secret DEPLOY_TOKEN tidak ditemukan pada runner. Ekstraksi dibatalkan."
+            exit 1
+          fi
+
+          set +e
+          RESPONSE=$(curl --silent --show-error --fail-with-body \
+            --proto "=https" \
+            --proto-redir "=https" \
+            --location \
+            --connect-timeout 30 \
+            --max-time 180 \
+            --request POST \
+            --data-urlencode "token=${DEPLOY_TOKEN}" \
+            "https://ahmad-rapi.web.id/auto_extract.php")
+          CURL_STATUS=$?
+          set -e
+
+          if [ $CURL_STATUS -ne 0 ]; then
+            echo "::error::Permintaan HTTP ekstraksi gagal dengan kode keluar curl: $CURL_STATUS."
+            if [ -n "$RESPONSE" ]; then
+              echo "Respon Server: $RESPONSE"
+            fi
+            exit 1
+          fi
+
           echo "Server Response: $RESPONSE"
+
           if [[ "$RESPONSE" == *"DEPLOY_SUCCESS"* ]]; then
             echo "🎉 Deployment successfully extracted and completed!"
           else
-            echo "Output: $RESPONSE"
+            echo "::error::Ekstraksi deployment gagal. Output: $RESPONSE"
+            exit 1
           fi
-

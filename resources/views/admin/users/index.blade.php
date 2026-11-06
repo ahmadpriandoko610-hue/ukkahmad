@@ -33,11 +33,17 @@
 </div>
 @endif
 
-<div style="margin:20px 0;">
+<div style="margin:20px 0; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
     <a href="{{ route('users.create') }}"
        class="btn-login"
-       style="display:inline-block;width:auto;padding:10px 20px;text-decoration:none;">
-        + Tambah User
+       style="display:inline-flex; align-items:center; gap:8px; width:auto; padding:10px 20px; text-decoration:none;">
+        + Tambah User Manual
+    </a>
+
+    <a href="{{ route('users.import.form') }}"
+       class="btn-login"
+       style="display:inline-flex; align-items:center; gap:8px; width:auto; padding:10px 20px; text-decoration:none; background:#059669; border-color:#059669;">
+        📊 Import Pengguna Excel
     </a>
 </div>
 

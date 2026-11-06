@@ -57,7 +57,7 @@
             @if(Auth::user()->role === 'admin')
 
                 <a href="{{ route('dashboard.admin') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('dashboard.admin') ? 'active' : '' }}">
 
                     Dashboard
 
@@ -65,7 +65,7 @@
 
 
                 <a href="{{ route('users.index') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('users.*') ? 'active' : '' }}">
 
                     Data User
 
@@ -73,7 +73,7 @@
 
 
                 <a href="{{ route('rooms.index') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('rooms.*', 'ruangan.*') ? 'active' : '' }}">
 
                     Data Ruangan
 
@@ -81,7 +81,7 @@
 
 
                 <a href="{{ route('events.index') }}"
-                   class="menu-item">
+                   class="menu-item {{ (request()->routeIs('events.*', 'agenda.*') && !request()->routeIs('admin.agenda.report')) ? 'active' : '' }}">
 
                     Data Agenda
 
@@ -97,7 +97,7 @@
 
 
                 <a href="{{ route('admin.complaints') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('admin.complaints*') ? 'active' : '' }}">
 
                     Pengaduan Kerusakan
 
@@ -105,9 +105,17 @@
 
 
                 <a href="{{ route('admin.calendar') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('admin.calendar') ? 'active' : '' }}">
 
                     Kalender
+
+                </a>
+
+
+                <a href="{{ route('jadwal.index') }}"
+                   class="menu-item {{ request()->routeIs('jadwal.index') ? 'active' : '' }}">
+
+                    Jadwal Ruangan
 
                 </a>
 
@@ -122,7 +130,7 @@
             @if(Auth::user()->role === 'pic')
 
                 <a href="{{ route('dashboard.pic') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('dashboard.pic') ? 'active' : '' }}">
 
                     Dashboard
 
@@ -130,7 +138,7 @@
 
 
                 <a href="{{ route('pic.events') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('pic.events', 'pic.agenda', 'events.approve', 'events.reject*', 'agenda.setujui', 'agenda.tolak*') ? 'active' : '' }}">
 
                     Verifikasi Agenda
 
@@ -138,7 +146,7 @@
 
 
                 <a href="{{ route('pic.calendar') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('pic.calendar') ? 'active' : '' }}">
 
                     Kalender Agenda
 
@@ -146,7 +154,7 @@
 
 
                 <a href="{{ route('pic.complaints') }}"
-                   class="menu-item">
+                   class="menu-item {{ (request()->routeIs('pic.complaints', 'pic.complaints.update') && !request()->routeIs('pic.complaints.report')) ? 'active' : '' }}">
 
                     Pengaduan Kerusakan
 
@@ -162,7 +170,7 @@
 
 
                 <a href="{{ route('pic.schedule') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('pic.schedule', 'schedule.index') ? 'active' : '' }}">
 
                     Jadwal Ruangan
 
@@ -179,7 +187,7 @@
             @if(Auth::user()->role === 'guru')
 
                 <a href="{{ route('dashboard.guru') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('dashboard.guru') ? 'active' : '' }}">
 
                     Dashboard
 
@@ -187,7 +195,7 @@
 
 
                 <a href="{{ route('guru.agenda') }}"
-                   class="menu-item">
+                   class="menu-item {{ (request()->routeIs('guru.agenda', 'guru.events') && !request()->routeIs('guru.events.create', 'guru.events.store')) ? 'active' : '' }}">
 
                     Agenda Saya
 
@@ -195,7 +203,7 @@
 
 
                 <a href="{{ route('guru.events.create') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('guru.events.create', 'guru.events.store') ? 'active' : '' }}">
 
                     Ajukan Agenda
 
@@ -203,7 +211,7 @@
 
 
                 <a href="{{ route('guru.calendar') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('guru.calendar') ? 'active' : '' }}">
 
                     Kalender Agenda
 
@@ -211,7 +219,7 @@
 
 
                 <a href="{{ route('jadwal.index') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('jadwal.index') ? 'active' : '' }}">
 
                     Jadwal
 
@@ -219,7 +227,7 @@
 
 
                 <a href="{{ route('complaints.index') }}"
-                   class="menu-item">
+                   class="menu-item {{ (request()->routeIs('complaints.index') && !request()->routeIs('complaints.create', 'complaints.store')) ? 'active' : '' }}">
 
                     Pengaduan Kerusakan
 
@@ -227,7 +235,7 @@
 
 
                 <a href="{{ route('complaints.create') }}"
-                   class="menu-item">
+                   class="menu-item {{ request()->routeIs('complaints.create', 'complaints.store') ? 'active' : '' }}">
 
                     Buat Pengaduan
 

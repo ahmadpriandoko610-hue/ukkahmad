@@ -122,12 +122,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 id="tanggal"
                 name="tanggal"
                 class="form-control"
-                min="{{ today()->addDay()->toDateString() }}"
+                min="{{ today()->toDateString() }}"
                 value="{{ old('tanggal', $agenda->date?->format('Y-m-d')) }}"
                 required
             >
 
-            <small class="form-help">Peminjaman ruang minimal H-1.</small>
+            <small class="form-help">Admin dapat menentukan tanggal mulai hari ini.</small>
         </div>
 
         <div class="form-group">
@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 id="tanggal_selesai"
                 name="tanggal_selesai"
                 class="form-control"
-                min="{{ old('tanggal', $agenda->date?->format('Y-m-d')) ?: today()->addDay()->toDateString() }}"
+                min="{{ old('tanggal', $agenda->date?->format('Y-m-d')) ?: today()->toDateString() }}"
                 value="{{ old('tanggal_selesai', $agenda->end_date?->format('Y-m-d')) }}"
             >
 

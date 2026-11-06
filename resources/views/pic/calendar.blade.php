@@ -77,16 +77,6 @@
 
     <div class="calendar-container">
 
-        <div class="calendar-search">
-            <input
-                type="search"
-                id="calendarSearch"
-                class="calendar-search-input"
-                placeholder="Cari agenda, ruangan, atau tanggal..."
-                aria-label="Cari agenda pada kalender"
-            >
-        </div>
-
         <div class="calendar-toolbar">
             <button type="button" id="prevMonth" class="calendar-nav">‹</button>
             <h3 id="currentMonth"></h3>
@@ -104,9 +94,6 @@
         </div>
 
         <div id="calendarDays" class="calendar-days"></div>
-        <p id="calendarSearchEmpty" class="calendar-search-empty" role="status" hidden>
-            Tidak ada agenda yang cocok pada bulan ini.
-        </p>
     </div>
 
 </div>
@@ -120,8 +107,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const currentMonth = document.getElementById('currentMonth');
     const prevMonth = document.getElementById('prevMonth');
     const nextMonth = document.getElementById('nextMonth');
-    const calendarSearch = document.getElementById('calendarSearch');
-    const calendarSearchEmpty = document.getElementById('calendarSearchEmpty');
 
     let events = [];
 
@@ -158,7 +143,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     let currentDate = new Date();
-    let searchTerm = '';
 
     const monthNames = [
         'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
@@ -209,18 +193,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const dayEvents = events.filter(function (event) {
                 const eventStart = String(event.date).substring(0, 10);
                 const eventEnd = event.end_date ? String(event.end_date).substring(0, 10) : eventStart;
-                const matchesDate = dateString >= eventStart && dateString <= eventEnd;
-                const searchableText = [
-                    event.title,
-                    event.time,
-                    event.room,
-                    event.description,
-                    event.date,
-                    event.end_date,
-                    event.date_range
-                ].join(' ').toLocaleLowerCase('id');
-
-                return matchesDate && searchableText.includes(searchTerm);
+                return dateString >= eventStart && dateString <= eventEnd;
             });
 
             const isSunday = new Date(currentDate.getFullYear(), currentDate.getMonth(), day).getDay() === 0;
@@ -275,17 +248,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             }
 
-            dayEvents.forEach(function (event) {
+            const maxVisible = 1;
+            const visibleEvents = dayEvents.slice(0, maxVisible);
+            const hiddenCount = dayEvents.length - maxVisible;
+
+            visibleEvents.forEach(function (event) {
                 visibleEventCount++;
                 const isAdmin = event.creator_role === 'admin';
                 const roleClass = isAdmin ? 'event-admin' : 'event-guru';
-                const roleBadge = isAdmin
-                    ? '<span class="event-role-tag admin">⭐ Admin / Sekolah</span>'
-                    : '<span class="event-role-tag guru">👤 Guru / Organisasi</span>';
 
                 html += `
-                    <div class="calendar-event ${roleClass}">
-                        ${roleBadge}
+                    <div class="calendar-event ${roleClass}" role="button" tabindex="0" onclick="openDayDetailModal('${dateString}')" style="cursor: pointer;">
                         <strong class="event-title">${escapeHtml(event.title)}</strong>
                         <span class="event-time">🕐 ${escapeHtml(event.time)}</span>
                         <small class="event-room">📍 ${escapeHtml(event.room)}</small>
@@ -293,17 +266,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 `;
             });
 
+            if (hiddenCount > 0) {
+                html += `
+                    <button type="button" class="calendar-more-btn" onclick="openDayDetailModal('${dateString}')">
+                        +${hiddenCount} lainnya
+                    </button>
+                `;
+            }
+
             dayElement.innerHTML = html;
             calendarDays.appendChild(dayElement);
         }
-
-        calendarSearchEmpty.hidden = searchTerm === '' || visibleEventCount > 0;
     }
-
-    calendarSearch.addEventListener('input', function () {
-        searchTerm = calendarSearch.value.trim().toLocaleLowerCase('id');
-        renderCalendar();
-    });
 
     prevMonth.addEventListener('click', function () {
         currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
@@ -316,7 +290,108 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     renderCalendar();
+
+    /*
+    |--------------------------------------------------------------------------
+    | MODAL LIHAT SEMUA AGENDA PADA TANGGAL (PIC)
+    |--------------------------------------------------------------------------
+    */
+    const dayEventsModal = document.getElementById('dayEventsModal');
+    const dayModalTitle = document.getElementById('dayModalTitle');
+    const dayModalSubtitle = document.getElementById('dayModalSubtitle');
+    const dayModalList = document.getElementById('dayModalList');
+    const closeDayModal = document.getElementById('closeDayModal');
+    const btnDismissDayModal = document.getElementById('btnDismissDayModal');
+
+    window.openDayDetailModal = function (dateString) {
+        const matchingEvents = events.filter(function (event) {
+            const eventStart = String(event.date).substring(0, 10);
+            const eventEnd = event.end_date ? String(event.end_date).substring(0, 10) : eventStart;
+            return dateString >= eventStart && dateString <= eventEnd;
+        });
+
+        const dateParts = dateString.split('-');
+        let formattedDate = dateString;
+        if (dateParts.length === 3) {
+            const dayNum = parseInt(dateParts[2], 10);
+            const monthIdx = parseInt(dateParts[1], 10) - 1;
+            const yearNum = dateParts[0];
+            formattedDate = dayNum + ' ' + (monthNames[monthIdx] || '') + ' ' + yearNum;
+        }
+
+        dayModalTitle.textContent = 'Agenda: ' + formattedDate;
+        dayModalSubtitle.textContent = matchingEvents.length + ' kegiatan pada tanggal ini';
+
+        let listHtml = '';
+        if (matchingEvents.length === 0) {
+            listHtml = '<div style="text-align: center; color: #64748b; padding: 20px;">Tidak ada agenda pada tanggal ini.</div>';
+        } else {
+            matchingEvents.forEach(function (event) {
+                const isAdmin = event.creator_role === 'admin';
+                const borderColor = isAdmin ? '#7c3aed' : '#2563eb';
+                const bgColor = isAdmin ? '#f5f3ff' : '#eff6ff';
+                const titleColor = isAdmin ? '#5b21b6' : '#1e40af';
+
+                listHtml += `
+                    <div style="margin-bottom: 12px; padding: 12px 14px; border-radius: 8px; background: ${bgColor}; border: 1px solid #e2e8f0; border-left: 4px solid ${borderColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px;">
+                            <strong style="font-size: 14.5px; color: ${titleColor}; line-height: 1.3;">${escapeHtml(event.title)}</strong>
+                            <span style="font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #ffffff; color: #0284c7; font-weight: 600; border: 1px solid #bae6fd; white-space: nowrap;">${escapeHtml(event.status || 'Disetujui')}</span>
+                        </div>
+                        <div style="font-size: 12.5px; color: #475569; display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px;">
+                            <span>🕐 <strong>Waktu:</strong> ${escapeHtml(event.time)}</span>
+                            <span>📍 <strong>Ruangan:</strong> ${escapeHtml(event.room)}</span>
+                        </div>
+                        ${event.description && event.description !== '-' ? `<div style="font-size: 12px; color: #64748b; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1; line-height: 1.4;">${escapeHtml(event.description)}</div>` : ''}
+                    </div>
+                `;
+            });
+        }
+
+        dayModalList.innerHTML = listHtml;
+        dayEventsModal.style.display = 'flex';
+    };
+
+    function hideDayDetailModal() {
+        if (dayEventsModal) {
+            dayEventsModal.style.display = 'none';
+        }
+    }
+
+    if (closeDayModal) closeDayModal.addEventListener('click', hideDayDetailModal);
+    if (btnDismissDayModal) btnDismissDayModal.addEventListener('click', hideDayDetailModal);
+    if (dayEventsModal) {
+        dayEventsModal.addEventListener('click', function (e) {
+            if (e.target === dayEventsModal) {
+                hideDayDetailModal();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            hideDayDetailModal();
+        }
+    });
+
 });
 </script>
+
+{{-- MODAL DETAIL AGENDA PER TANGGAL (PIC) --}}
+<div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:15px;">
+    <div class="modal-content" style="background:#fff; border-radius:10px; max-width:520px; width:100%; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0,0,0,0.2); overflow:hidden;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc;">
+            <div>
+                <h3 id="dayModalTitle" style="margin:0; font-size:16px; font-weight:700; color:#1e293b;">Daftar Agenda</h3>
+                <small id="dayModalSubtitle" style="color:#64748b; font-size:12px;"></small>
+            </div>
+            <button type="button" id="closeDayModal" style="background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b; line-height:1; padding:4px 8px;">✕</button>
+        </div>
+        <div id="dayModalList" style="padding:16px 20px; overflow-y:auto; flex:1;"></div>
+        <div style="padding:12px 20px; border-top:1px solid #e2e8f0; background:#f8fafc; text-align:right;">
+            <button type="button" id="btnDismissDayModal" class="btn btn-back" style="padding:7px 16px; font-size:13px;">Tutup</button>
+        </div>
+    </div>
+</div>
 
 @endsection

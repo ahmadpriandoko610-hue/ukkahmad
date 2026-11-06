@@ -43,44 +43,6 @@
 
 
         {{-- =========================================================
-             SEARCH
-        ========================================================== --}}
-        <section class="calendar-search">
-
-            <div class="search-box">
-
-                <span class="search-icon">
-                    🔍
-                </span>
-
-                <input
-                    type="text"
-                    id="searchAgenda"
-                    placeholder="Cari agenda, ruangan, waktu, atau tanggal..."
-                    autocomplete="off"
-                >
-
-                <button
-                    type="button"
-                    id="clearSearch"
-                    class="clear-search"
-                    hidden
-                >
-                    ✕
-                </button>
-
-            </div>
-
-            <div
-                id="searchInfo"
-                class="search-info"
-                hidden
-            ></div>
-
-        </section>
-
-
-        {{-- =========================================================
              CALENDAR CARD
         ========================================================== --}}
         <div class="calendar-legend-box" style="margin: 0 0 16px 0;">
@@ -345,6 +307,25 @@
 
     </div>
 
+    {{-- =========================================================
+         MODAL LIHAT SEMUA AGENDA PADA TANGGAL (PUBLIK)
+    ========================================================== --}}
+    <div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:15px;">
+        <div class="modal-content" style="background:#fff; border-radius:10px; max-width:520px; width:100%; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0,0,0,0.2); overflow:hidden;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc;">
+                <div>
+                    <h3 id="dayModalTitle" style="margin:0; font-size:16px; font-weight:700; color:#1e293b;">Daftar Agenda</h3>
+                    <small id="dayModalSubtitle" style="color:#64748b; font-size:12px;"></small>
+                </div>
+                <button type="button" id="closeDayModal" style="background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b; line-height:1; padding:4px 8px;">✕</button>
+            </div>
+            <div id="dayModalList" style="padding:16px 20px; overflow-y:auto; flex:1;"></div>
+            <div style="padding:12px 20px; border-top:1px solid #e2e8f0; background:#f8fafc; text-align:right;">
+                <button type="button" id="btnDismissDayModal" class="btn btn-back" style="padding:7px 16px; font-size:13px; cursor:pointer;">Tutup</button>
+            </div>
+        </div>
+    </div>
+
 
     {{-- =========================================================
          DATA AGENDA DARI LARAVEL
@@ -484,15 +465,6 @@
         const monthLabel =
             document.getElementById('monthLabel');
 
-        const searchInput =
-            document.getElementById('searchAgenda');
-
-        const clearSearch =
-            document.getElementById('clearSearch');
-
-        const searchInfo =
-            document.getElementById('searchInfo');
-
         const emptyMessage =
             document.getElementById('emptyMessage');
 
@@ -627,6 +599,75 @@
             document.body.classList.remove(
                 'modal-open'
             );
+        }
+
+        /* =========================================================
+           DAY EVENTS MODAL (LIHAT SEMUA AGENDA PADA TANGGAL)
+        ========================================================== */
+
+        function openDayDetailModal(dateString, matchingEvents) {
+            const dayModal = document.getElementById('dayEventsModal');
+            const dayTitle = document.getElementById('dayModalTitle');
+            const daySub = document.getElementById('dayModalSubtitle');
+            const dayList = document.getElementById('dayModalList');
+
+            const dateParts = dateString.split('-');
+            let formattedDate = dateString;
+            if (dateParts.length === 3) {
+                const dayNum = parseInt(dateParts[2], 10);
+                const monthIdx = parseInt(dateParts[1], 10) - 1;
+                const yearNum = dateParts[0];
+                formattedDate = dayNum + ' ' + (months[monthIdx] || '') + ' ' + yearNum;
+            }
+
+            dayTitle.textContent = 'Agenda: ' + formattedDate;
+            daySub.textContent = matchingEvents.length + ' kegiatan pada tanggal ini';
+
+            let listHtml = '';
+            matchingEvents.forEach(function (event) {
+                const isAdmin = event.creator_role === 'admin';
+                const borderColor = isAdmin ? '#7c3aed' : '#2563eb';
+                const bgColor = isAdmin ? '#f5f3ff' : '#eff6ff';
+                const titleColor = isAdmin ? '#5b21b6' : '#1e40af';
+
+                listHtml += `
+                    <div style="margin-bottom: 12px; padding: 12px 14px; border-radius: 8px; background: ${bgColor}; border: 1px solid #e2e8f0; border-left: 4px solid ${borderColor}; cursor: pointer;" onclick="hideDayDetailModal(); showEventDetail(allEvents.find(e => e.id === ${event.id}) || ${JSON.stringify(event).replace(/"/g, '&quot;')})">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px;">
+                            <strong style="font-size: 14.5px; color: ${titleColor}; line-height: 1.3;">${escapeHtml(event.title || 'Agenda')}</strong>
+                            <span style="font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #ffffff; color: #0284c7; font-weight: 600; border: 1px solid #bae6fd; white-space: nowrap;">${escapeHtml(event.status || 'Disetujui')}</span>
+                        </div>
+                        <div style="font-size: 12.5px; color: #475569; display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px;">
+                            <span>🕐 <strong>Waktu:</strong> ${escapeHtml(event.time || '-')}</span>
+                            <span>📍 <strong>Ruangan:</strong> ${escapeHtml(event.room || 'Tanpa ruangan')}</span>
+                        </div>
+                        ${event.description && event.description !== '-' ? `<div style="font-size: 12px; color: #64748b; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1; line-height: 1.4;">${escapeHtml(event.description)}</div>` : ''}
+                    </div>
+                `;
+            });
+
+            dayList.innerHTML = listHtml;
+            dayModal.style.display = 'flex';
+        }
+
+        function hideDayDetailModal() {
+            const dayModal = document.getElementById('dayEventsModal');
+            if (dayModal) {
+                dayModal.style.display = 'none';
+            }
+        }
+
+        const closeDayModal = document.getElementById('closeDayModal');
+        const btnDismissDayModal = document.getElementById('btnDismissDayModal');
+        const dayEventsModal = document.getElementById('dayEventsModal');
+
+        if (closeDayModal) closeDayModal.addEventListener('click', hideDayDetailModal);
+        if (btnDismissDayModal) btnDismissDayModal.addEventListener('click', hideDayDetailModal);
+        if (dayEventsModal) {
+            dayEventsModal.addEventListener('click', function(e) {
+                if (e.target === dayEventsModal) {
+                    hideDayDetailModal();
+                }
+            });
         }
 
 
@@ -893,7 +934,11 @@
                     'event-list';
 
 
-                dailyEvents.forEach(
+                const maxVisible = 1;
+                const visibleEvents = dailyEvents.slice(0, maxVisible);
+                const hiddenCount = dailyEvents.length - maxVisible;
+
+                visibleEvents.forEach(
                     function(item) {
 
                         const eventElement =
@@ -902,11 +947,6 @@
                         const isAdmin = item.creator_role === 'admin';
                         eventElement.className =
                             'calendar-event ' + (isAdmin ? 'event-admin' : 'event-guru');
-
-                        const roleTag = document.createElement('span');
-                        roleTag.className = 'event-role-tag ' + (isAdmin ? 'admin' : 'guru');
-                        roleTag.textContent = isAdmin ? '⭐ Admin / Sekolah' : '👤 Guru / Organisasi';
-                        eventElement.appendChild(roleTag);
 
 
                         /* -----------------------------
@@ -1029,6 +1069,18 @@
                     }
                 );
 
+                if (hiddenCount > 0) {
+                    const moreBtn = document.createElement('button');
+                    moreBtn.type = 'button';
+                    moreBtn.className = 'calendar-more-btn';
+                    moreBtn.textContent = `+${hiddenCount} lainnya`;
+                    moreBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        openDayDetailModal(dateString, dailyEvents);
+                    });
+                    eventList.appendChild(moreBtn);
+                }
+
 
                 dayElement.appendChild(
                     eventList
@@ -1104,208 +1156,6 @@
             }
 
         }
-
-
-        /* =========================================================
-           SEARCH AGENDA
-        ========================================================== */
-
-        function searchAgenda() {
-
-            const keyword =
-                searchInput.value
-                    .trim()
-                    .toLowerCase();
-
-
-            /* -----------------------------------------------------
-               SEARCH KOSONG
-            ----------------------------------------------------- */
-
-            if (!keyword) {
-
-                events = [
-                    ...allEvents
-                ];
-
-                clearSearch.hidden =
-                    true;
-
-                searchInfo.hidden =
-                    true;
-
-                activeMonth =
-                    new Date();
-
-                activeMonth.setDate(1);
-
-                renderCalendar();
-
-                return;
-            }
-
-
-            /* -----------------------------------------------------
-               FILTER AGENDA
-            ----------------------------------------------------- */
-
-            events =
-                allEvents.filter(
-                    function(item) {
-
-                        const title =
-                            String(
-                                item.title ?? ''
-                            ).toLowerCase();
-
-                        const room =
-                            String(
-                                item.room ?? ''
-                            ).toLowerCase();
-
-                        const time =
-                            String(
-                                item.time ?? ''
-                            ).toLowerCase();
-
-                        const date =
-                            String(
-                                item.date ?? ''
-                            ).toLowerCase();
-
-                        const formattedDate =
-                            formatDate(
-                                item.date
-                            ).toLowerCase();
-
-
-                        return (
-                            title.includes(keyword) ||
-                            room.includes(keyword) ||
-                            time.includes(keyword) ||
-                            date.includes(keyword) ||
-                            formattedDate.includes(keyword)
-                        );
-
-                    }
-                );
-
-
-            /* -----------------------------------------------------
-               TOMBOL CLEAR
-            ----------------------------------------------------- */
-
-            clearSearch.hidden =
-                false;
-
-
-            /* -----------------------------------------------------
-               INFORMASI HASIL
-            ----------------------------------------------------- */
-
-            searchInfo.hidden =
-                false;
-
-
-            if (events.length > 0) {
-
-                searchInfo.textContent =
-                    `Ditemukan ${events.length} agenda.`;
-
-            }
-
-            else {
-
-                searchInfo.textContent =
-                    'Agenda tidak ditemukan.';
-
-            }
-
-
-            /* -----------------------------------------------------
-               PINDAH KE BULAN AGENDA PERTAMA
-            ----------------------------------------------------- */
-
-            if (
-                events.length > 0 &&
-                events[0].date
-            ) {
-
-                const firstDate =
-                    new Date(
-                        events[0].date +
-                        'T00:00:00'
-                    );
-
-
-                if (
-                    !Number.isNaN(
-                        firstDate.getTime()
-                    )
-                ) {
-
-                    activeMonth =
-                        new Date(
-                            firstDate.getFullYear(),
-                            firstDate.getMonth(),
-                            1
-                        );
-
-                }
-
-            }
-
-
-            /* -----------------------------------------------------
-               RENDER ULANG
-            ----------------------------------------------------- */
-
-            renderCalendar();
-
-        }
-
-
-        /* =========================================================
-           SEARCH EVENT
-        ========================================================== */
-
-        searchInput.addEventListener(
-            'input',
-            searchAgenda
-        );
-
-
-        /* =========================================================
-           CLEAR SEARCH
-        ========================================================== */
-
-        clearSearch.addEventListener(
-            'click',
-            function() {
-
-                searchInput.value =
-                    '';
-
-                events =
-                    [...allEvents];
-
-                clearSearch.hidden =
-                    true;
-
-                searchInfo.hidden =
-                    true;
-
-                activeMonth =
-                    new Date();
-
-                activeMonth.setDate(1);
-
-                renderCalendar();
-
-                searchInput.focus();
-
-            }
-        );
 
 
         /* =========================================================

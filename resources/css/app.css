@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+ @import 'tailwindcss';
 
 @source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
 @source '../../storage/framework/views/*.php';
@@ -230,12 +230,26 @@ SIDEBAR
     color: #cbd5e1;
     text-decoration: none;
     border-radius: 8px;
-    transition: 0.2s;
+    border-left: 4px solid transparent;
+    transition: all 0.2s ease;
 }
 
-.menu-item:hover, .menu-item.active {
+.menu-item:hover {
     background: #334155;
-    color: #fff;
+    color: #ffffff;
+}
+
+.menu-item.active {
+    background: #2563eb;
+    color: #ffffff;
+    font-weight: 600;
+    border-left: 4px solid #93c5fd;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+}
+
+.menu-item.active:hover {
+    background: #1d4ed8;
+    color: #ffffff;
 }
 
 .btn-logout-sidebar {
@@ -3018,9 +3032,16 @@ body.modal-open {
 
 .dash-stat-top {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
+    justify-content: flex-end;
+    align-items: center;
     margin-bottom: 14px;
+}
+
+.dash-stat-icon,
+.dash-card-title-icon,
+.dash-list-icon,
+.dash-empty-icon {
+    display: none !important;
 }
 
 .dash-stat-icon {
@@ -4337,6 +4358,32 @@ body.modal-open {
     background: #dbeafe;
     color: #1d4ed8;
     border: 1px solid #bfdbfe;
+}
+
+/* TOMBOL +X LAINNYA / LIHAT SEMUA AGENDA */
+.calendar-more-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    margin-top: 4px;
+    padding: 3px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #2563eb;
+    background: #eff6ff;
+    border: 1px dashed #93c5fd;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition: all 0.15s ease;
+}
+
+.calendar-more-btn:hover {
+    background: #dbeafe;
+    border-color: #2563eb;
+    color: #1d4ed8;
 }
 
 /* =========================================================

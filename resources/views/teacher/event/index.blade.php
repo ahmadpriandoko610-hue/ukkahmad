@@ -78,7 +78,7 @@
             <tr>
 
                 <td>
-                    {{ $loop->iteration }}
+                    {{ method_exists($agenda, 'firstItem') && $agenda->firstItem() ? ($agenda->firstItem() + $loop->index) : $loop->iteration }}
                 </td>
 
                 <td>
@@ -154,5 +154,11 @@
     </table>
 
 </div>
+
+@if(method_exists($agenda, 'hasPages') && $agenda->hasPages())
+    <div style="margin-top: 20px;">
+        {{ $agenda->links() }}
+    </div>
+@endif
 
 @endsection

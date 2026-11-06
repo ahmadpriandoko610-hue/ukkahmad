@@ -122,19 +122,26 @@ class EventController extends Controller
      */
     public function store(Request $request)
     {
+        $isAdmin = Auth::user()->role === 'admin';
+        $dateRule = $isAdmin ? 'required|date|after_or_equal:today' : 'required|date|after:today';
+
+        $roomInput = $request->input('ruangan_id');
+        $roomIds = is_array($roomInput) ? array_values(array_filter($roomInput)) : ($roomInput ? [$roomInput] : []);
+
         $request->validate([
             'judul' => 'required|string|max:255',
-            'tanggal' => 'required|date|after:today',
+            'tanggal' => $dateRule,
             'tanggal_selesai' => 'nullable|date|after_or_equal:tanggal',
             'sesi_mulai' => 'required|integer|between:1,14',
             'sesi_selesai' => 'required|integer|between:1,14|gte:sesi_mulai',
-            'ruangan_id' => 'required|exists:rooms,id',
+            'ruangan_id' => 'required',
             'keterangan' => 'nullable|string',
         ], [
             'judul.required' => 'Judul agenda wajib diisi.',
             'tanggal.required' => 'Tanggal agenda wajib diisi.',
             'tanggal.date' => 'Tanggal agenda tidak valid.',
             'tanggal.after' => 'Peminjaman ruangan harus diajukan minimal H-1 (sehari sebelum tanggal agenda).',
+            'tanggal.after_or_equal' => 'Tanggal agenda tidak boleh mendahului hari ini.',
             'tanggal_selesai.date' => 'Tanggal selesai agenda tidak valid.',
             'tanggal_selesai.after_or_equal' => 'Tanggal selesai harus sama dengan atau setelah tanggal mulai.',
             'sesi_mulai.required' => 'Sesi mulai wajib dipilih.',
@@ -142,9 +149,16 @@ class EventController extends Controller
             'sesi_selesai.required' => 'Sesi selesai wajib dipilih.',
             'sesi_selesai.between' => 'Sesi selesai harus antara sesi 1 sampai sesi 14.',
             'sesi_selesai.gte' => 'Sesi selesai harus sama dengan atau setelah sesi mulai.',
-            'ruangan_id.required' => 'Ruangan wajib dipilih.',
-            'ruangan_id.exists' => 'Ruangan yang dipilih tidak ditemukan.',
+            'ruangan_id.required' => 'Ruangan wajib dipilih minimal 1.',
         ]);
+
+        if (empty($roomIds)) {
+            return back()
+                ->withInput()
+                ->withErrors([
+                    'ruangan_id' => 'Ruangan wajib dipilih minimal 1.',
+                ]);
+        }
 
         $startTime = $this->sessionTime((int) $request->sesi_mulai);
         $endTime = $this->sessionTime((int) $request->sesi_selesai + 1);
@@ -155,17 +169,25 @@ class EventController extends Controller
          * CEK RUANGAN AKTIF
          * =====================================================
          */
-        $room = Room::whereKey($request->ruangan_id)
-            ->where('is_active', true)
-            ->first();
+        $rooms = Room::whereIn('id', $roomIds)->get()->keyBy('id');
 
-        if (!$room) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'ruangan_id' =>
-                        'Ruangan yang dipilih tidak aktif.',
-                ]);
+        foreach ($roomIds as $roomId) {
+            $room = $rooms->get($roomId);
+            if (!$room) {
+                return back()
+                    ->withInput()
+                    ->withErrors([
+                        'ruangan_id' => 'Ruangan yang dipilih tidak ditemukan.',
+                    ]);
+            }
+
+            if (!$room->is_active) {
+                return back()
+                    ->withInput()
+                    ->withErrors([
+                        'ruangan_id' => 'Ruangan "' . ($room->room_name ?: $room->nama_ruangan) . '" sedang tidak aktif.',
+                    ]);
+            }
         }
 
         /**
@@ -173,22 +195,25 @@ class EventController extends Controller
          * CEK BENTROK JADWAL
          * =====================================================
          */
-        if (
-            $this->hasScheduleConflict(
-                (int) $request->ruangan_id,
-                $request->tanggal,
-                $startTime,
-                $endTime,
-                null,
-                $endDate
-            )
-        ) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'ruangan_id' =>
-                        'Ruangan sudah terpakai pada waktu tersebut.',
-                ]);
+        foreach ($roomIds as $roomId) {
+            if (
+                $this->hasScheduleConflict(
+                    (int) $roomId,
+                    $request->tanggal,
+                    $startTime,
+                    $endTime,
+                    null,
+                    $endDate
+                )
+            ) {
+                $room = $rooms->get($roomId);
+                $roomName = $room ? ($room->room_name ?: $room->nama_ruangan) : "ID: $roomId";
+                return back()
+                    ->withInput()
+                    ->withErrors([
+                        'ruangan_id' => 'Ruangan "' . $roomName . '" sudah terpakai pada waktu tersebut.',
+                    ]);
+            }
         }
 
         /**
@@ -196,42 +221,48 @@ class EventController extends Controller
          * SIMPAN AGENDA
          * =====================================================
          */
-        $isAdmin = Auth::user()->role === 'admin';
-
-        Event::create([
-            'event_name' => $request->judul,
-            'date' => $request->tanggal,
-            'end_date' => $endDate,
-            'start_time' => $startTime,
-            'end_time' => $endTime,
-            'requester_id' => Auth::id(),
-            'room_id' => $request->ruangan_id,
-            'status' => $isAdmin ? 'Disetujui' : 'Menunggu',
-            'approved_by' => $isAdmin ? Auth::id() : null,
-            'move_reason' => null,
-            'description' => $request->keterangan,
-        ]);
+        DB::transaction(function () use ($roomIds, $request, $startTime, $endTime, $endDate, $isAdmin) {
+            foreach ($roomIds as $roomId) {
+                Event::create([
+                    'event_name' => $request->judul,
+                    'date' => $request->tanggal,
+                    'end_date' => $endDate,
+                    'start_time' => $startTime,
+                    'end_time' => $endTime,
+                    'requester_id' => Auth::id(),
+                    'room_id' => $roomId,
+                    'status' => $isAdmin ? 'Disetujui' : 'Menunggu',
+                    'approved_by' => $isAdmin ? Auth::id() : null,
+                    'move_reason' => null,
+                    'description' => $request->keterangan,
+                ]);
+            }
+        });
 
         /**
          * =====================================================
          * REDIRECT
          * =====================================================
          */
+        $roomCount = count($roomIds);
+
         if (Auth::user()->role === 'guru') {
+            $message = $roomCount > 1
+                ? "Agenda berhasil diajukan untuk {$roomCount} ruangan."
+                : 'Agenda berhasil diajukan.';
+
             return redirect()
                 ->route('guru.agenda')
-                ->with(
-                    'success',
-                    'Agenda berhasil diajukan.'
-                );
+                ->with('success', $message);
         }
+
+        $message = $roomCount > 1
+            ? "Agenda berhasil ditambahkan untuk {$roomCount} ruangan."
+            : 'Agenda berhasil ditambahkan.';
 
         return redirect()
             ->route('agenda.index')
-            ->with(
-                'success',
-                'Agenda berhasil ditambahkan.'
-            );
+            ->with('success', $message);
     }
 
     /**
@@ -289,7 +320,7 @@ class EventController extends Controller
 
         $request->validate([
             'judul' => 'required|string|max:255',
-            'tanggal' => 'required|date|after:today',
+            'tanggal' => 'required|date|after_or_equal:today',
             'tanggal_selesai' => 'nullable|date|after_or_equal:tanggal',
             'sesi_mulai' => 'required|integer|between:1,14',
             'sesi_selesai' => 'required|integer|between:1,14|gte:sesi_mulai',
@@ -299,7 +330,7 @@ class EventController extends Controller
             'judul.required' => 'Judul agenda wajib diisi.',
             'tanggal.required' => 'Tanggal agenda wajib diisi.',
             'tanggal.date' => 'Tanggal agenda tidak valid.',
-            'tanggal.after' => 'Peminjaman ruangan harus diajukan minimal H-1 (sehari sebelum tanggal agenda).',
+            'tanggal.after_or_equal' => 'Tanggal agenda tidak boleh mendahului hari ini.',
             'tanggal_selesai.date' => 'Tanggal selesai agenda tidak valid.',
             'tanggal_selesai.after_or_equal' => 'Tanggal selesai harus sama dengan atau setelah tanggal mulai.',
             'sesi_mulai.required' => 'Sesi mulai wajib dipilih.',
@@ -477,25 +508,58 @@ class EventController extends Controller
     }
 
     /**
-     * Batalkan agenda yang masih menunggu persetujuan.
+     * Admin menolak agenda dengan keterangan penolakan.
      */
-    public function cancel(Event $event)
+    public function adminReject(Request $request, Event $event)
     {
         if ($event->status !== 'Menunggu') {
             return redirect()
                 ->route('agenda.index')
-                ->with('success', 'Hanya agenda berstatus Menunggu yang dapat dibatalkan.');
+                ->with('error', 'Hanya agenda berstatus Menunggu yang dapat ditolak.');
         }
+
+        $validated = $request->validate([
+            'rejection_reason' => ['required', 'string', 'max:2000'],
+        ], [
+            'rejection_reason.required' => 'Keterangan penolakan wajib diisi.',
+            'rejection_reason.max' => 'Keterangan penolakan maksimal 2000 karakter.',
+        ]);
 
         $event->update([
             'status' => 'Ditolak',
             'approved_by' => Auth::id(),
+            'rejection_reason' => $validated['rejection_reason'],
             'rejected_at' => now(),
         ]);
 
         return redirect()
             ->route('agenda.index')
-            ->with('success', 'Agenda berhasil dibatalkan.');
+            ->with('success', 'Agenda berhasil ditolak.');
+    }
+
+    /**
+     * Batalkan/tolak agenda yang masih menunggu persetujuan.
+     */
+    public function cancel(Request $request, Event $event)
+    {
+        if ($event->status !== 'Menunggu') {
+            return redirect()
+                ->route('agenda.index')
+                ->with('error', 'Hanya agenda berstatus Menunggu yang dapat dibatalkan/ditolak.');
+        }
+
+        $reason = $request->input('rejection_reason') ?: 'Ditolak oleh Administrator.';
+
+        $event->update([
+            'status' => 'Ditolak',
+            'approved_by' => Auth::id(),
+            'rejection_reason' => $reason,
+            'rejected_at' => now(),
+        ]);
+
+        return redirect()
+            ->route('agenda.index')
+            ->with('success', 'Agenda berhasil ditolak.');
     }
 
     /**
@@ -588,8 +652,9 @@ class EventController extends Controller
      */
     public function agendaGuru()
     {
-        $today = Carbon::today()->toDateString();
-        $agenda = Event::notExpired()->with([
+        $today = Carbon::now('Asia/Jakarta')->toDateString();
+        $agenda = Event::visibleInTeacherAgenda()
+            ->with([
                 'user',
                 'room',
                 'approver',

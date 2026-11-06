@@ -28,7 +28,7 @@
                     <line x1="8" y1="2" x2="8" y2="6"/>
                     <line x1="3" y1="10" x2="21" y2="10"/>
                 </svg>
-                <span>{{ \Carbon\Carbon::now()->translatedFormat('l, d F Y') }}</span>
+                <span>{{ \Carbon\Carbon::now()->locale('id')->translatedFormat('l, d F Y') }}</span>
             </div>
 
             <a href="{{ route('events.create') }}" class="dash-hero-btn">
@@ -49,14 +49,6 @@
         {{-- USER STAT CARD --}}
         <a href="{{ route('users.index') }}" class="dash-stat-card">
             <div class="dash-stat-top">
-                <div class="dash-stat-icon blue">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                        <circle cx="9" cy="7" r="4"/>
-                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                    </svg>
-                </div>
                 <span class="dash-stat-badge blue">Sistem</span>
             </div>
             <div>
@@ -77,18 +69,6 @@
         {{-- RUANGAN STAT CARD --}}
         <a href="{{ route('rooms.index') }}" class="dash-stat-card">
             <div class="dash-stat-top">
-                <div class="dash-stat-icon emerald">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 21h18"/>
-                        <path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/>
-                        <path d="M9 9h1"/>
-                        <path d="M9 13h1"/>
-                        <path d="M9 17h1"/>
-                        <path d="M14 9h1"/>
-                        <path d="M14 13h1"/>
-                        <path d="M14 17h1"/>
-                    </svg>
-                </div>
                 <span class="dash-stat-badge emerald">Sarana</span>
             </div>
             <div>
@@ -109,14 +89,6 @@
         {{-- AGENDA STAT CARD --}}
         <a href="{{ route('events.index') }}" class="dash-stat-card">
             <div class="dash-stat-top">
-                <div class="dash-stat-icon amber">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="16" y1="2" x2="16" y2="6"/>
-                        <line x1="8" y1="2" x2="8" y2="6"/>
-                        <line x1="3" y1="10" x2="21" y2="10"/>
-                    </svg>
-                </div>
                 <span class="dash-stat-badge amber">{{ $agendaMenunggu }} Menunggu</span>
             </div>
             <div>
@@ -137,13 +109,6 @@
         {{-- PENGADUAN STAT CARD --}}
         <a href="{{ route('admin.complaints') }}" class="dash-stat-card">
             <div class="dash-stat-top">
-                <div class="dash-stat-icon rose">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        <line x1="12" y1="9" x2="12" y2="13"/>
-                        <line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                </div>
                 <span class="dash-stat-badge rose">{{ $pengaduanBelum }} Belum Selesai</span>
             </div>
             <div>
@@ -172,14 +137,6 @@
         <div class="dash-card">
             <div class="dash-card-header">
                 <h3 class="dash-card-title">
-                    <span class="dash-card-title-icon">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                            <line x1="16" y1="2" x2="16" y2="6"/>
-                            <line x1="8" y1="2" x2="8" y2="6"/>
-                            <line x1="3" y1="10" x2="21" y2="10"/>
-                        </svg>
-                    </span>
                     Agenda Terkini & Mendatang
                 </h3>
                 <a href="{{ route('events.index') }}" class="dash-card-action">
@@ -221,9 +178,9 @@
                                         <td>
                                             <div style="font-size: 12.5px; color: #334155;">
                                                 @if($item->end_date && $item->end_date->gt($item->date))
-                                                    <span style="font-weight:600;">{{ \Carbon\Carbon::parse($item->date)->translatedFormat('d M') }} - {{ \Carbon\Carbon::parse($item->end_date)->translatedFormat('d M Y') }}</span>
+                                                    <span style="font-weight:600;">{{ \Carbon\Carbon::parse($item->date)->locale('id')->translatedFormat('d M') }} - {{ \Carbon\Carbon::parse($item->end_date)->locale('id')->translatedFormat('d M Y') }}</span>
                                                 @else
-                                                    {{ \Carbon\Carbon::parse($item->date)->translatedFormat('d M Y') }}
+                                                    {{ \Carbon\Carbon::parse($item->date)->locale('id')->translatedFormat('d M Y') }}
                                                 @endif
                                             </div>
                                             <small style="color: #94a3b8;">
@@ -265,14 +222,6 @@
                     </div>
                 @else
                     <div class="dash-empty">
-                        <div class="dash-empty-icon">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                                <line x1="16" y1="2" x2="16" y2="6"/>
-                                <line x1="8" y1="2" x2="8" y2="6"/>
-                                <line x1="3" y1="10" x2="21" y2="10"/>
-                            </svg>
-                        </div>
                         <p class="dash-empty-title">Belum Ada Agenda Aktif</p>
                         <p class="dash-empty-desc">Saat ini belum ada permohonan atau kegiatan agenda yang dijadwalkan.</p>
                     </div>
@@ -291,11 +240,6 @@
         <div class="dash-card">
             <div class="dash-card-header">
                 <h3 class="dash-card-title">
-                    <span class="dash-card-title-icon" style="background: #fef2f2; color: #dc2626;">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                        </svg>
-                    </span>
                     Pengaduan Kerusakan Terbaru
                 </h3>
                 <a href="{{ route('admin.complaints') }}" class="dash-card-action">
@@ -312,11 +256,6 @@
                         @foreach($pengaduanTerbaru as $complaint)
                             <div class="dash-list-item">
                                 <div class="dash-list-main">
-                                    <div class="dash-list-icon" style="background: {{ $complaint->status_repair === 'Sudah Diperbaiki' ? '#ecfdf5' : ($complaint->status_repair === 'Menunggu Spare Part' ? '#eff6ff' : '#fef2f2') }}; color: {{ $complaint->status_repair === 'Sudah Diperbaiki' ? '#059669' : ($complaint->status_repair === 'Menunggu Spare Part' ? '#2563eb' : '#dc2626') }};">
-                                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                                        </svg>
-                                    </div>
                                     <div>
                                         <div class="dash-list-title">
                                             {{ $complaint->room->room_name ?? 'Ruangan' }}
@@ -352,12 +291,6 @@
                     </div>
                 @else
                     <div class="dash-empty">
-                        <div class="dash-empty-icon" style="background: #ecfdf5; color: #059669;">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                                <polyline points="22 4 12 14.01 9 11.01"/>
-                            </svg>
-                        </div>
                         <p class="dash-empty-title">Semua Fasilitas Berfungsi Normal</p>
                         <p class="dash-empty-desc">Tidak ada pengaduan kerusakan yang belum ditangani saat ini.</p>
                     </div>
@@ -380,16 +313,6 @@
     <div class="dash-card">
         <div class="dash-card-header">
             <h3 class="dash-card-title">
-                <span class="dash-card-title-icon" style="background: #ecfdf5; color: #059669;">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 21h18"/>
-                        <path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"/>
-                        <line x1="9" y1="9" x2="10" y2="9"/>
-                        <line x1="9" y1="13" x2="10" y2="13"/>
-                        <line x1="14" y1="9" x2="15" y2="9"/>
-                        <line x1="14" y1="13" x2="15" y2="13"/>
-                    </svg>
-                </span>
                 Fasilitas & Ruangan Sekolah
             </h3>
             <a href="{{ route('rooms.index') }}" class="dash-card-action">

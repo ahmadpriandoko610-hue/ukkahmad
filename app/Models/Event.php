@@ -60,6 +60,65 @@ class Event extends Model
     }
 
     /**
+     * Scope khusus untuk tabel "Agenda Saya" Guru / Organisasi:
+     * - Status Menunggu: tampil selama tanggal pelaksanaan belum terlewati (>= hari ini).
+     *   Jika tanggal sudah lewat (< hari ini), otomatis tersembunyi.
+     * - Status Sudah Terlaksana / Disetujui: tampil pada tanggal pelaksanaan dan H+1 (>= kemarin).
+     *   Jika sudah lewat 1 hari setelah tanggal pelaksanaan, otomatis tersembunyi.
+     * - Status Ditolak: tampil jika ditolak dalam 30 hari terakhir.
+     * - Data di database TIDAK dihapus.
+     */
+    public function scopeVisibleInTeacherAgenda(Builder $query, ?Carbon $now = null): Builder
+    {
+        $now = $now ?: Carbon::now('Asia/Jakarta');
+        $today = $now->toDateString();
+        $yesterday = $now->copy()->subDay()->toDateString();
+        $rejectionCutoff = $now->copy()->subDays(30);
+
+        return $query->where(function (Builder $q) use ($today, $yesterday, $rejectionCutoff) {
+            // A. Status Menunggu: tampil jika belum terlewati (>= hari ini)
+            $q->where(function (Builder $sub) use ($today) {
+                $sub->where('status', 'Menunggu')
+                    ->where(function (Builder $dateQ) use ($today) {
+                        $dateQ->whereDate('end_date', '>=', $today)
+                            ->orWhere(function (Builder $single) use ($today) {
+                                $single->whereNull('end_date')
+                                    ->whereDate('date', '>=', $today);
+                            });
+                    });
+            })
+            // B. Status Disetujui / Sudah Terlaksana: tampil pada hari pelaksanaan dan H+1 (>= kemarin)
+            ->orWhere(function (Builder $sub) use ($yesterday) {
+                $sub->whereIn('status', ['Disetujui', 'Sudah Terlaksana'])
+                    ->where(function (Builder $dateQ) use ($yesterday) {
+                        $dateQ->whereDate('end_date', '>=', $yesterday)
+                            ->orWhere(function (Builder $single) use ($yesterday) {
+                                $single->whereNull('end_date')
+                                    ->whereDate('date', '>=', $yesterday);
+                            });
+                    });
+            })
+            // C. Status Ditolak: tampil jika ditolak dalam 30 hari terakhir (atau legacy data belum lewat hari ini)
+            ->orWhere(function (Builder $sub) use ($today, $rejectionCutoff) {
+                $sub->where('status', 'Ditolak')
+                    ->where(function (Builder $rej) use ($today, $rejectionCutoff) {
+                        $rej->where('rejected_at', '>', $rejectionCutoff)
+                            ->orWhere(function (Builder $legacy) use ($today) {
+                                $legacy->whereNull('rejected_at')
+                                    ->where(function (Builder $dateQ) use ($today) {
+                                        $dateQ->whereDate('end_date', '>=', $today)
+                                            ->orWhere(function (Builder $single) use ($today) {
+                                                $single->whereNull('end_date')
+                                                    ->whereDate('date', '>=', $today);
+                                            });
+                                    });
+                            });
+                    });
+            });
+        });
+    }
+
+    /**
      * User yang mengajukan agenda
      */
     public function requester()

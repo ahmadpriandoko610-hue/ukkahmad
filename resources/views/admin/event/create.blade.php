@@ -115,12 +115,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 name="tanggal"
                 id="tanggal"
                 class="form-control"
-                min="{{ today()->addDay()->toDateString() }}"
+                min="{{ today()->toDateString() }}"
                 value="{{ old('tanggal') }}"
                 required
             >
 
-            <small class="form-help">Peminjaman ruang wajib diajukan minimal H-1.</small>
+            <small class="form-help">Admin dapat mengajukan agenda mulai hari ini.</small>
         </div>
 
         <div class="form-group">
@@ -133,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 name="tanggal_selesai"
                 id="tanggal_selesai"
                 class="form-control"
-                min="{{ today()->addDay()->toDateString() }}"
+                min="{{ today()->toDateString() }}"
                 value="{{ old('tanggal_selesai') }}"
             >
 

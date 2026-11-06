@@ -5,6 +5,17 @@
 
     RewriteEngine On
 
+    # Blokir akses langsung ke berkas arsip, database dump, dan environment
+    <FilesMatch "\.(zip|tar|gz|rar|7z|sql|env.*)$">
+        <IfModule mod_authz_core.c>
+            Require all denied
+        </IfModule>
+        <IfModule !mod_authz_core.c>
+            Order deny,allow
+            Deny from all
+        </IfModule>
+    </FilesMatch>
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]

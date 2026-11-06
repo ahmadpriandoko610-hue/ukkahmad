@@ -138,37 +138,29 @@
     </div>
 
 
-    {{-- RUANGAN --}}
+    {{-- RUANGAN (Bisa lebih dari 1) --}}
     <div class="form-group">
-
-        <label for="ruangan_id">
-            Ruangan
+        <label>
+            Pilih Ruangan <span style="color: #ef4444;">*</span> <small style="color: #64748b; font-weight: normal;">(Bisa pilih lebih dari 1 ruangan)</small>
         </label>
 
-        <select
-            name="ruangan_id"
-            id="ruangan_id"
-            class="form-control"
-            required
-        >
+        @php($oldSelectedRooms = (array) old('ruangan_id', []))
 
-            <option value="">
-                -- Pilih Ruangan --
-            </option>
-
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; max-height: 260px; overflow-y: auto;">
             @foreach($ruangan as $item)
-
-                <option
-                    value="{{ $item->id }}"
-                    {{ old('ruangan_id') == $item->id ? 'selected' : '' }}
-                >
-                    {{ $item->room_name }}
-                </option>
-
+                <label style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; background: #f8fafc; font-weight: normal; margin: 0; transition: background 0.15s ease;">
+                    <input
+                        type="checkbox"
+                        name="ruangan_id[]"
+                        value="{{ $item->id }}"
+                        {{ in_array($item->id, $oldSelectedRooms) ? 'checked' : '' }}
+                        style="width: 18px; height: 18px; cursor: pointer; accent-color: #2563eb;"
+                    >
+                    <span style="font-size: 14px; color: #1e293b; font-weight: 500;">{{ $item->room_name }}</span>
+                </label>
             @endforeach
-
-        </select>
-
+        </div>
+        <small class="form-help">Centang satu atau lebih ruangan yang ingin dipinjam.</small>
     </div>
 
 
