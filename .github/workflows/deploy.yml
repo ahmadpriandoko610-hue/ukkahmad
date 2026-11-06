@@ -2676,7 +2676,7 @@ jobs:
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftp
           local-dir: ./ftp_stage1_shield/
-          server-dir: public_html/
+          server-dir: /public_html/
 
       - name: "🔍 Verify Staging Shield Active (HTTP 403 on Probe File)"
         run: |
