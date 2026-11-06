@@ -21,10 +21,6 @@
 
             <div class="calendar-brand">
 
-                <div class="calendar-logo">
-                    📅
-                </div>
-
                 <div>
                     <h1>Kalender Agenda Sekolah</h1>
 
@@ -46,7 +42,7 @@
              CALENDAR CARD
         ========================================================== --}}
         <div class="calendar-legend-box" style="margin: 0 0 16px 0;">
-            <span class="calendar-legend-title">🎨 Petunjuk Warna:</span>
+            <span class="calendar-legend-title">Petunjuk Warna:</span>
             <div class="calendar-legend-items">
                 <span class="calendar-legend-item">
                     <span class="calendar-legend-color holiday"></span>
@@ -118,7 +114,6 @@
                 class="empty-message"
                 hidden
             >
-                <div class="empty-icon">📅</div>
                 <h3>Tidak ada agenda</h3>
                 <p>Belum ada agenda yang disetujui pada bulan ini.</p>
             </div>
@@ -180,10 +175,6 @@
 
             <div class="event-modal-header">
 
-                <div class="event-modal-icon">
-                    📅
-                </div>
-
                 <div>
 
                     <h2 id="eventModalTitle">
@@ -204,10 +195,6 @@
                 {{-- TANGGAL --}}
                 <div class="event-detail-item">
 
-                    <span class="event-detail-icon">
-                        📅
-                    </span>
-
                     <div>
 
                         <small>
@@ -226,10 +213,6 @@
                 {{-- WAKTU --}}
                 <div class="event-detail-item">
 
-                    <span class="event-detail-icon">
-                        🕐
-                    </span>
-
                     <div>
 
                         <small>
@@ -246,10 +229,6 @@
 
                 {{-- KATEGORI / PENGAJU --}}
                 <div class="event-detail-item">
-
-                    <span class="event-detail-icon">
-                        👤
-                    </span>
 
                     <div>
 
@@ -268,10 +247,6 @@
 
                 {{-- RUANGAN --}}
                 <div class="event-detail-item">
-
-                    <span class="event-detail-icon">
-                        📍
-                    </span>
 
                     <div>
 
@@ -310,7 +285,7 @@
     {{-- =========================================================
          MODAL LIHAT SEMUA AGENDA PADA TANGGAL (PUBLIK)
     ========================================================== --}}
-    <div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:15px;">
+    <div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99999; align-items:center; justify-content:center; padding:15px;">
         <div class="modal-content" style="background:#fff; border-radius:10px; max-width:520px; width:100%; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0,0,0,0.2); overflow:hidden;">
             <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc;">
                 <div>
@@ -572,8 +547,8 @@
             const eventModalRequester = document.getElementById('eventModalRequester');
             if (eventModalRequester) {
                 eventModalRequester.innerHTML = item.creator_role === 'admin'
-                    ? '<span class="event-role-tag admin">⭐ Agenda Admin / Sekolah</span>'
-                    : '<span class="event-role-tag guru">👤 ' + escapeHtml(item.requester_name || 'Guru / Organisasi') + '</span>';
+                    ? '<span class="event-role-tag admin">Agenda Admin / Sekolah</span>'
+                    : '<span class="event-role-tag guru">' + escapeHtml(item.requester_name || 'Guru / Organisasi') + '</span>';
             }
 
             eventModalRoom.textContent =
@@ -611,43 +586,67 @@
             const daySub = document.getElementById('dayModalSubtitle');
             const dayList = document.getElementById('dayModalList');
 
+            if (!dayModal || !dayTitle || !daySub || !dayList) return;
+
+            if (!matchingEvents || !Array.isArray(matchingEvents)) {
+                matchingEvents = events.filter(function(item) {
+                    const start = item.date ? String(item.date).substring(0, 10) : '';
+                    const end = item.end_date ? String(item.end_date).substring(0, 10) : start;
+                    return dateString >= start && dateString <= end;
+                });
+            }
+
             const dateParts = dateString.split('-');
             let formattedDate = dateString;
             if (dateParts.length === 3) {
                 const dayNum = parseInt(dateParts[2], 10);
                 const monthIdx = parseInt(dateParts[1], 10) - 1;
                 const yearNum = dateParts[0];
-                formattedDate = dayNum + ' ' + (months[monthIdx] || '') + ' ' + yearNum;
+                formattedDate = dayNum + ' ' + (monthNames[monthIdx] || '') + ' ' + yearNum;
             }
 
             dayTitle.textContent = 'Agenda: ' + formattedDate;
             daySub.textContent = matchingEvents.length + ' kegiatan pada tanggal ini';
 
-            let listHtml = '';
-            matchingEvents.forEach(function (event) {
-                const isAdmin = event.creator_role === 'admin';
-                const borderColor = isAdmin ? '#7c3aed' : '#2563eb';
-                const bgColor = isAdmin ? '#f5f3ff' : '#eff6ff';
-                const titleColor = isAdmin ? '#5b21b6' : '#1e40af';
+            dayList.innerHTML = '';
+            if (matchingEvents.length === 0) {
+                dayList.innerHTML = '<div style="text-align: center; color: #64748b; padding: 20px;">Tidak ada agenda pada tanggal ini.</div>';
+            } else {
+                matchingEvents.forEach(function (event) {
+                    const isAdmin = event.creator_role === 'admin';
+                    const borderColor = isAdmin ? '#7c3aed' : '#2563eb';
+                    const bgColor = isAdmin ? '#f5f3ff' : '#eff6ff';
+                    const titleColor = isAdmin ? '#5b21b6' : '#1e40af';
 
-                listHtml += `
-                    <div style="margin-bottom: 12px; padding: 12px 14px; border-radius: 8px; background: ${bgColor}; border: 1px solid #e2e8f0; border-left: 4px solid ${borderColor}; cursor: pointer;" onclick="hideDayDetailModal(); showEventDetail(allEvents.find(e => e.id === ${event.id}) || ${JSON.stringify(event).replace(/"/g, '&quot;')})">
+                    const itemEl = document.createElement('div');
+                    itemEl.style.cssText = `margin-bottom: 12px; padding: 12px 14px; border-radius: 8px; background: ${bgColor}; border: 1px solid #e2e8f0; border-left: 4px solid ${borderColor}; cursor: pointer;`;
+
+                    itemEl.innerHTML = `
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px;">
                             <strong style="font-size: 14.5px; color: ${titleColor}; line-height: 1.3;">${escapeHtml(event.title || 'Agenda')}</strong>
                             <span style="font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #ffffff; color: #0284c7; font-weight: 600; border: 1px solid #bae6fd; white-space: nowrap;">${escapeHtml(event.status || 'Disetujui')}</span>
                         </div>
                         <div style="font-size: 12.5px; color: #475569; display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px;">
-                            <span>🕐 <strong>Waktu:</strong> ${escapeHtml(event.time || '-')}</span>
-                            <span>📍 <strong>Ruangan:</strong> ${escapeHtml(event.room || 'Tanpa ruangan')}</span>
+                            <span><strong>Waktu:</strong> ${escapeHtml(event.time || '-')}</span>
+                            <span><strong>Ruangan:</strong> ${escapeHtml(event.room || 'Tanpa ruangan')}</span>
                         </div>
                         ${event.description && event.description !== '-' ? `<div style="font-size: 12px; color: #64748b; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1; line-height: 1.4;">${escapeHtml(event.description)}</div>` : ''}
-                    </div>
-                `;
-            });
+                    `;
 
-            dayList.innerHTML = listHtml;
+                    itemEl.addEventListener('click', function() {
+                        hideDayDetailModal();
+                        const fullItem = allEvents.find(e => e.id === event.id) || event;
+                        showEventDetail(fullItem);
+                    });
+
+                    dayList.appendChild(itemEl);
+                });
+            }
+
             dayModal.style.display = 'flex';
         }
+
+        window.openDayDetailModal = openDayDetailModal;
 
         function hideDayDetailModal() {
             const dayModal = document.getElementById('dayEventsModal');
@@ -913,11 +912,11 @@
                     if (nationalDay.is_holiday) {
                         natPill.className = 'calendar-holiday-pill';
                         natPill.title = 'Hari Libur Nasional: ' + nationalDay.name;
-                        natPill.innerHTML = '<span class="holiday-icon">🔴</span><span>' + escapeHtml(nationalDay.name) + '</span>';
+                        natPill.innerHTML = '<span>' + escapeHtml(nationalDay.name) + '</span>';
                     } else {
                         natPill.className = 'calendar-national-pill';
                         natPill.title = 'Hari Penting Nasional: ' + nationalDay.name;
-                        natPill.innerHTML = '<span class="national-icon">🇮🇩</span><span>' + escapeHtml(nationalDay.name) + '</span>';
+                        natPill.innerHTML = '<span>' + escapeHtml(nationalDay.name) + '</span>';
                     }
                     dayElement.appendChild(natPill);
                 }
@@ -1026,7 +1025,6 @@
                             'event-time';
 
                         time.textContent =
-                            '🕐 ' +
                             (item.time || '-');
 
 
@@ -1041,7 +1039,6 @@
                             'event-room';
 
                         room.textContent =
-                            '📍 ' +
                             (item.room || 'Tanpa ruangan');
 
 
@@ -1074,9 +1071,10 @@
                     moreBtn.type = 'button';
                     moreBtn.className = 'calendar-more-btn';
                     moreBtn.textContent = `+${hiddenCount} lainnya`;
+                    moreBtn.setAttribute('title', `Lihat semua ${dailyEvents.length} agenda pada tanggal ini`);
                     moreBtn.addEventListener('click', function(e) {
                         e.stopPropagation();
-                        openDayDetailModal(dateString, dailyEvents);
+                        openDayDetailModal(date, dailyEvents);
                     });
                     eventList.appendChild(moreBtn);
                 }

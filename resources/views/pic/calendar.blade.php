@@ -50,7 +50,7 @@
 
     {{-- PETUNJUK WARNA KALENDER --}}
     <div class="calendar-legend-box">
-        <span class="calendar-legend-title">🎨 Petunjuk Warna:</span>
+        <span class="calendar-legend-title">Petunjuk Warna:</span>
         <div class="calendar-legend-items">
             <span class="calendar-legend-item">
                 <span class="calendar-legend-color holiday"></span>
@@ -234,14 +234,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (nationalDay.is_holiday) {
                     html += `
                         <div class="calendar-holiday-pill" title="Hari Libur Nasional: ${escapeHtml(nationalDay.name)}">
-                            <span class="holiday-icon">🔴</span>
                             <span>${escapeHtml(nationalDay.name)}</span>
                         </div>
                     `;
                 } else {
                     html += `
                         <div class="calendar-national-pill" title="Hari Penting Nasional: ${escapeHtml(nationalDay.name)}">
-                            <span class="national-icon">🇮🇩</span>
                             <span>${escapeHtml(nationalDay.name)}</span>
                         </div>
                     `;
@@ -260,8 +258,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 html += `
                     <div class="calendar-event ${roleClass}" role="button" tabindex="0" onclick="openDayDetailModal('${dateString}')" style="cursor: pointer;">
                         <strong class="event-title">${escapeHtml(event.title)}</strong>
-                        <span class="event-time">🕐 ${escapeHtml(event.time)}</span>
-                        <small class="event-room">📍 ${escapeHtml(event.room)}</small>
+                        <span class="event-time">${escapeHtml(event.time)}</span>
+                        <small class="event-room">${escapeHtml(event.room)}</small>
                     </div>
                 `;
             });
@@ -278,18 +276,6 @@ document.addEventListener('DOMContentLoaded', function () {
             calendarDays.appendChild(dayElement);
         }
     }
-
-    prevMonth.addEventListener('click', function () {
-        currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-        renderCalendar();
-    });
-
-    nextMonth.addEventListener('click', function () {
-        currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
-        renderCalendar();
-    });
-
-    renderCalendar();
 
     /*
     |--------------------------------------------------------------------------
@@ -339,8 +325,8 @@ document.addEventListener('DOMContentLoaded', function () {
                             <span style="font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #ffffff; color: #0284c7; font-weight: 600; border: 1px solid #bae6fd; white-space: nowrap;">${escapeHtml(event.status || 'Disetujui')}</span>
                         </div>
                         <div style="font-size: 12.5px; color: #475569; display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px;">
-                            <span>🕐 <strong>Waktu:</strong> ${escapeHtml(event.time)}</span>
-                            <span>📍 <strong>Ruangan:</strong> ${escapeHtml(event.room)}</span>
+                            <span><strong>Waktu:</strong> ${escapeHtml(event.time)}</span>
+                            <span><strong>Ruangan:</strong> ${escapeHtml(event.room)}</span>
                         </div>
                         ${event.description && event.description !== '-' ? `<div style="font-size: 12px; color: #64748b; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1; line-height: 1.4;">${escapeHtml(event.description)}</div>` : ''}
                     </div>
@@ -374,11 +360,23 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    prevMonth.addEventListener('click', function () {
+        currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+        renderCalendar();
+    });
+
+    nextMonth.addEventListener('click', function () {
+        currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+        renderCalendar();
+    });
+
+    renderCalendar();
+
 });
 </script>
 
 {{-- MODAL DETAIL AGENDA PER TANGGAL (PIC) --}}
-<div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:15px;">
+<div id="dayEventsModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99999; align-items:center; justify-content:center; padding:15px;">
     <div class="modal-content" style="background:#fff; border-radius:10px; max-width:520px; width:100%; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0,0,0,0.2); overflow:hidden;">
         <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc;">
             <div>
