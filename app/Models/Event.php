@@ -21,6 +21,7 @@ class Event extends Model
         'end_time',
         'requester_id',
         'room_id',
+        'group_id',
         'status',
         'approved_by',
         'move_reason',
@@ -311,5 +312,93 @@ class Event extends Model
     public function getCreatorLabelAttribute(): string
     {
         return $this->creator_role === 'admin' ? 'Admin / Sekolah' : 'Guru / Organisasi';
+    }
+
+    /**
+     * Mengambil seluruh event yang berasal dari pengajuan/booking yang sama
+     */
+    public function getSisterEvents()
+    {
+        if (\Illuminate\Support\Facades\Schema::hasColumn('events', 'group_id') && !empty($this->group_id)) {
+            return static::where('group_id', $this->group_id)->get();
+        }
+
+        $dateStr = $this->date ? Carbon::parse($this->date)->toDateString() : null;
+        $endDateStr = $this->end_date ? Carbon::parse($this->end_date)->toDateString() : $dateStr;
+
+        $query = static::where('requester_id', $this->requester_id)
+            ->where('event_name', $this->event_name)
+            ->whereDate('date', $dateStr)
+            ->whereTime('start_time', $this->start_time)
+            ->whereTime('end_time', $this->end_time);
+
+        if ($endDateStr) {
+            $query->whereDate('end_date', $endDateStr);
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Mengelompokkan event yang memiliki booking/jadwal multi-ruangan menjadi 1 data
+     */
+    public static function groupEventsForDisplay($events)
+    {
+        if (empty($events) || (is_object($events) && method_exists($events, 'isEmpty') && $events->isEmpty())) {
+            return collect();
+        }
+
+        $collection = $events instanceof \Illuminate\Support\Collection ? $events : collect($events);
+
+        return $collection->groupBy(function (Event $item) {
+            if (!empty($item->group_id)) {
+                return 'grp_' . $item->group_id;
+            }
+
+            $dateStr = $item->date ? Carbon::parse($item->date)->toDateString() : '';
+            $endDateStr = $item->end_date ? Carbon::parse($item->end_date)->toDateString() : $dateStr;
+
+            return implode('|', [
+                $item->requester_id,
+                trim(strtolower($item->event_name ?? '')),
+                $dateStr,
+                $endDateStr,
+                substr($item->start_time ?? '', 0, 5),
+                substr($item->end_time ?? '', 0, 5),
+            ]);
+        })->map(function ($group) {
+            /** @var Event $primary */
+            $primary = clone $group->first();
+
+            $primary->all_events = $group;
+            $primary->event_ids = $group->pluck('id')->all();
+
+            $rooms = $group->map(function ($e) {
+                return $e->room ?: $e->ruangan;
+            })->filter()->unique('id')->values();
+
+            $primary->rooms = $rooms;
+            $primary->rooms_label = $rooms->map(fn($r) => $r->room_name ?: $r->nama_ruangan)->filter()->implode(', ');
+
+            if ($rooms->count() > 1 && $primary->rooms_label) {
+                $virtualRoom = clone ($primary->room ?: ($primary->ruangan ?: new Room()));
+                $virtualRoom->room_name = $primary->rooms_label;
+                $virtualRoom->nama_ruangan = $primary->rooms_label;
+                $primary->setRelation('room', $virtualRoom);
+                $primary->setRelation('ruangan', $virtualRoom);
+            }
+
+            // Status agregat jika berbeda
+            $statuses = $group->pluck('status')->unique();
+            if ($statuses->count() > 1) {
+                if ($statuses->contains('Menunggu')) {
+                    $primary->status = 'Menunggu';
+                } elseif ($statuses->contains('Disetujui')) {
+                    $primary->status = 'Disetujui';
+                }
+            }
+
+            return $primary;
+        })->values();
     }
 }

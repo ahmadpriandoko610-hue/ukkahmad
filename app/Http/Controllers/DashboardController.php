@@ -30,13 +30,14 @@ class DashboardController extends Controller
         $agendaMenunggu = Event::notExpired()->where('status', 'Menunggu')->count();
         $pengaduanBelum = Complaint::visibleInActiveList()->where('status_repair', 'Belum Diperbaiki')->count();
 
-        $agendaTerbaru = Event::with(['room', 'requester'])
+        $rawAgendaTerbaru = Event::with(['room', 'requester'])
             ->notExpired()
             ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
-            ->take(5)
+            ->take(15)
             ->get();
+        $agendaTerbaru = Event::groupEventsForDisplay($rawAgendaTerbaru)->take(5);
 
         $pengaduanTerbaru = Complaint::with(['room', 'reporter'])
             ->visibleInActiveList()
@@ -223,14 +224,15 @@ class DashboardController extends Controller
         $totalPengaduanSaya = Complaint::where('reporter_id', $userId)->count();
 
         $today = Carbon::today()->toDateString();
-        $agendaTerbaru = Event::with('room')
+        $rawAgendaTerbaru = Event::with('room')
             ->notExpired()
             ->where('requester_id', $userId)
             ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
-            ->take(5)
+            ->take(15)
             ->get();
+        $agendaTerbaru = Event::groupEventsForDisplay($rawAgendaTerbaru)->take(5);
 
         $pengaduanSaya = Complaint::with('room')
             ->where('reporter_id', $userId)

@@ -107,7 +107,17 @@
             </td>
 
             <td>
-                {{ $item->ruangan->nama_ruangan }}
+                @if(isset($item->rooms) && $item->rooms->count() > 1)
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        @foreach($item->rooms as $r)
+                            <span style="background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; display: inline-block;">
+                                {{ $r->room_name ?: $r->nama_ruangan }}
+                            </span>
+                        @endforeach
+                    </div>
+                @else
+                    {{ $item->ruangan->nama_ruangan ?? ($item->room->room_name ?? '-') }}
+                @endif
             </td>
 
             <td>

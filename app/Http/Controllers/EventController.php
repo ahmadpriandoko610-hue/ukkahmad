@@ -7,9 +7,12 @@ use App\Models\Room;
 use App\Models\ScheduleNotification;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use App\Support\TablePdf;
 
 class EventController extends Controller
@@ -22,11 +25,21 @@ class EventController extends Controller
     public function index()
     {
         $today = Carbon::today()->toDateString();
-        $agenda = Event::notExpired()->with(['user', 'room', 'approver'])
+        $rawAgenda = Event::notExpired()->with(['user', 'room', 'approver'])
             ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
-            ->paginate(10);
+            ->get();
+
+        $grouped = Event::groupEventsForDisplay($rawAgenda);
+
+        $currentPage = LengthAwarePaginator::resolveCurrentPage();
+        $perPage = 10;
+        $currentItems = $grouped->slice(($currentPage - 1) * $perPage, $perPage)->values();
+        $agenda = new LengthAwarePaginator($currentItems, $grouped->count(), $perPage, $currentPage, [
+            'path' => LengthAwarePaginator::resolveCurrentPath(),
+            'query' => request()->query(),
+        ]);
 
         return view('admin.event.index', compact('agenda'));
     }
@@ -52,7 +65,7 @@ class EventController extends Controller
             $selesai = $tanggal->copy()->endOfMonth()->endOfDay();
         }
 
-        $agenda = Event::with(['user', 'room', 'approver'])
+        $rawAgenda = Event::with(['user', 'room', 'approver'])
             ->where(function ($query) use ($mulai, $selesai) {
                 $query->whereDate('date', '<=', $selesai->toDateString())
                     ->whereDate(DB::raw('COALESCE(end_date, date)'), '>=', $mulai->toDateString());
@@ -60,6 +73,8 @@ class EventController extends Controller
             ->orderBy('date')
             ->orderBy('start_time')
             ->get();
+
+        $agenda = Event::groupEventsForDisplay($rawAgenda);
 
         $jumlahStatus = [
             'Menunggu' => $agenda->where('status', 'Menunggu')->count(),
@@ -222,8 +237,11 @@ class EventController extends Controller
          * =====================================================
          */
         DB::transaction(function () use ($roomIds, $request, $startTime, $endTime, $endDate, $isAdmin) {
+            $groupId = (string) Str::uuid();
+            $hasGroupId = Schema::hasColumn('events', 'group_id');
+
             foreach ($roomIds as $roomId) {
-                Event::create([
+                $payload = [
                     'event_name' => $request->judul,
                     'date' => $request->tanggal,
                     'end_date' => $endDate,
@@ -235,7 +253,13 @@ class EventController extends Controller
                     'approved_by' => $isAdmin ? Auth::id() : null,
                     'move_reason' => null,
                     'description' => $request->keterangan,
-                ]);
+                ];
+
+                if ($hasGroupId && count($roomIds) > 1) {
+                    $payload['group_id'] = $groupId;
+                }
+
+                Event::create($payload);
             }
         });
 
@@ -439,10 +463,17 @@ class EventController extends Controller
             return redirect()->route($route)->with('error', 'Hanya agenda berstatus Menunggu yang dapat disetujui.');
         }
 
-        $event->update([
-            'status' => 'Disetujui',
-            'approved_by' => Auth::id(),
-        ]);
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->update([
+                'status' => 'Disetujui',
+                'approved_by' => Auth::id(),
+            ]);
+        }
 
         return redirect()
             ->route($route)
@@ -497,7 +528,14 @@ class EventController extends Controller
      */
     public function destroy(Event $event)
     {
-        $event->delete();
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->delete();
+        }
 
         return redirect()
             ->route('agenda.index')
@@ -525,12 +563,19 @@ class EventController extends Controller
             'rejection_reason.max' => 'Keterangan penolakan maksimal 2000 karakter.',
         ]);
 
-        $event->update([
-            'status' => 'Ditolak',
-            'approved_by' => Auth::id(),
-            'rejection_reason' => $validated['rejection_reason'],
-            'rejected_at' => now(),
-        ]);
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->update([
+                'status' => 'Ditolak',
+                'approved_by' => Auth::id(),
+                'rejection_reason' => $validated['rejection_reason'],
+                'rejected_at' => now(),
+            ]);
+        }
 
         return redirect()
             ->route('agenda.index')
@@ -550,12 +595,19 @@ class EventController extends Controller
 
         $reason = $request->input('rejection_reason') ?: 'Ditolak oleh Administrator.';
 
-        $event->update([
-            'status' => 'Ditolak',
-            'approved_by' => Auth::id(),
-            'rejection_reason' => $reason,
-            'rejected_at' => now(),
-        ]);
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->update([
+                'status' => 'Ditolak',
+                'approved_by' => Auth::id(),
+                'rejection_reason' => $reason,
+                'rejected_at' => now(),
+            ]);
+        }
 
         return redirect()
             ->route('agenda.index')
@@ -653,7 +705,7 @@ class EventController extends Controller
     public function agendaGuru()
     {
         $today = Carbon::now('Asia/Jakarta')->toDateString();
-        $agenda = Event::visibleInTeacherAgenda()
+        $rawAgenda = Event::visibleInTeacherAgenda()
             ->with([
                 'user',
                 'room',
@@ -666,7 +718,17 @@ class EventController extends Controller
             ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
-            ->paginate(10);
+            ->get();
+
+        $grouped = Event::groupEventsForDisplay($rawAgenda);
+
+        $currentPage = LengthAwarePaginator::resolveCurrentPage();
+        $perPage = 10;
+        $currentItems = $grouped->slice(($currentPage - 1) * $perPage, $perPage)->values();
+        $agenda = new LengthAwarePaginator($currentItems, $grouped->count(), $perPage, $currentPage, [
+            'path' => LengthAwarePaginator::resolveCurrentPath(),
+            'query' => request()->query(),
+        ]);
 
         $notifications = ScheduleNotification::where(
                 'user_id',
@@ -709,11 +771,13 @@ class EventController extends Controller
     
     public function teacherCalendar()
 {
-    $events = Event::notExpired()->with(['room', 'requester', 'user'])
+    $rawEvents = Event::notExpired()->with(['room', 'requester', 'user'])
         ->where('status', 'Disetujui')
         ->orderBy('date')
         ->orderBy('start_time')
-        ->get()
+        ->get();
+
+    $events = Event::groupEventsForDisplay($rawEvents)
         ->map(function (Event $event) {
 
             return [
@@ -734,8 +798,7 @@ class EventController extends Controller
                         substr($event->end_time, 0, 5)
                     : '-',
 
-                'room' => $event->room?->room_name
-                    ?? 'Tanpa ruangan',
+                'room' => $event->rooms_label ?: ($event->room?->room_name ?? 'Tanpa ruangan'),
 
                 'description' => $event->description ?? '-',
                 'requester_name' => $event->requester?->name ?? $event->user?->name ?? 'Guru / Organisasi',
@@ -770,7 +833,7 @@ class EventController extends Controller
     public function jadwal()
     {
         $today = Carbon::today()->toDateString();
-        $agenda = Event::notExpired()->with([
+        $rawAgenda = Event::notExpired()->with([
                 'room',
                 'user',
             ])
@@ -782,6 +845,8 @@ class EventController extends Controller
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
             ->get();
+
+        $agenda = Event::groupEventsForDisplay($rawAgenda);
 
         return view(
             'jadwal.index',
@@ -796,31 +861,34 @@ class EventController extends Controller
  */
 public function picCalendar()
 {
-    $events = Event::notExpired()->with(['room', 'requester', 'user'])
+    $rawEvents = Event::notExpired()->with(['room', 'requester', 'user'])
         ->where('status', 'Disetujui')
         ->orderBy('date')
         ->orderBy('start_time')
-        ->get()
+        ->get();
+
+    $events = Event::groupEventsForDisplay($rawEvents)
         ->map(function (Event $event) {
+            $rawDate = $event->getRawOriginal('date') ?? $event->date;
+            $dateStr = $rawDate
+                ? Carbon::parse($rawDate)->format('Y-m-d')
+                : null;
+            $endDateStr = $event->end_date
+                ? Carbon::parse($event->end_date)->format('Y-m-d')
+                : ($rawDate ? Carbon::parse($rawDate)->format('Y-m-d') : null);
+
             return [
                 'id' => $event->id,
                 'title' => $event->event_name,
-                'date' => $event->getRawOriginal('date')
-                    ? Carbon::parse(
-                        $event->getRawOriginal('date')
-                    )->format('Y-m-d')
-                    : null,
-                'end_date' => $event->end_date
-                    ? Carbon::parse($event->end_date)->format('Y-m-d')
-                    : ($event->getRawOriginal('date') ? Carbon::parse($event->getRawOriginal('date'))->format('Y-m-d') : null),
+                'date' => $dateStr,
+                'end_date' => $endDateStr,
                 'date_range' => $event->formatted_date_range,
                 'time' => $event->start_time
                     ? substr($event->start_time, 0, 5)
                         . ' - ' .
                         substr($event->end_time, 0, 5)
                     : '-',
-                'room' => $event->room?->room_name
-                    ?? 'Tanpa ruangan',
+                'room' => $event->rooms_label ?: ($event->room?->room_name ?? 'Tanpa ruangan'),
                 'description' => $event->description
                     ?? '-',
                 'requester_name' => $event->requester?->name ?? $event->user?->name ?? 'Guru / Organisasi',
@@ -862,10 +930,12 @@ public function picCalendar()
         }
 
         $today = Carbon::today()->toDateString();
-        $agenda = $query->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
+        $rawAgenda = $query->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
             ->orderBy('date', 'asc')
             ->orderBy('start_time', 'asc')
             ->get();
+
+        $agenda = Event::groupEventsForDisplay($rawAgenda);
 
         return view(
             'schedule.index',
@@ -1058,23 +1128,29 @@ public function picCalendar()
  */
 public function publicCalendar()
 {
-    $events = Event::notExpired()->with(['room', 'requester', 'user'])
+    $rawEvents = Event::notExpired()->with(['room', 'requester', 'user'])
         ->where('status', 'Disetujui')
         ->orderBy('date')
         ->orderBy('start_time')
-        ->get()
+        ->get();
+
+    $events = Event::groupEventsForDisplay($rawEvents)
         ->map(function (Event $event) {
+            $rawDate = $event->getRawOriginal('date') ?? $event->date;
+            $dateStr = $rawDate
+                ? Carbon::parse($rawDate)->format('Y-m-d')
+                : null;
+            $endDateStr = $event->end_date
+                ? Carbon::parse($event->end_date)->format('Y-m-d')
+                : ($rawDate ? Carbon::parse($rawDate)->format('Y-m-d') : null);
+
             return [
                 'id' => $event->id,
 
                 'title' => $event->event_name,
 
-                'date' => $event->getRawOriginal('date')
-    ? Carbon::parse($event->getRawOriginal('date'))->format('Y-m-d')
-    : null,
-                'end_date' => $event->end_date
-                    ? Carbon::parse($event->end_date)->format('Y-m-d')
-                    : ($event->getRawOriginal('date') ? Carbon::parse($event->getRawOriginal('date'))->format('Y-m-d') : null),
+                'date' => $dateStr,
+                'end_date' => $endDateStr,
                 'date_range' => $event->formatted_date_range,
 
                 'time' => $event->start_time
@@ -1091,8 +1167,7 @@ public function publicCalendar()
                     ? substr($event->end_time, 0, 5)
                     : '-',
 
-                'room' => $event->room?->room_name
-                    ?? 'Tanpa ruangan',
+                'room' => $event->rooms_label ?: ($event->room?->room_name ?? 'Tanpa ruangan'),
 
                 'description' => $event->description
                     ?? '-',

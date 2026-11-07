@@ -171,36 +171,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     {{-- RUANGAN --}}
+    @php
+        $oldSelectedRooms = old('ruangan_id', []);
+        if (!is_array($oldSelectedRooms)) {
+            $oldSelectedRooms = $oldSelectedRooms ? [$oldSelectedRooms] : [];
+        }
+    @endphp
     <div class="form-group">
-
-        <label for="ruangan_id">
-            Ruangan
+        <label>
+            Ruangan <span style="color: #ef4444;">*</span>
         </label>
-
-        <select
-            name="ruangan_id"
-            id="ruangan_id"
-            class="form-control"
-            required
-        >
-
-            <option value="">
-                -- Pilih Ruangan --
-            </option>
-
-            @foreach ($ruangan as $item)
-
-                <option
-                    value="{{ $item->id }}"
-                    {{ old('ruangan_id') == $item->id ? 'selected' : '' }}
-                >
-                    {{ $item->room_name }}
-                </option>
-
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 6px;">
+            @foreach($ruangan as $item)
+                <label style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; background: #f8fafc; font-weight: normal; margin: 0; transition: background 0.15s ease;">
+                    <input
+                        type="checkbox"
+                        name="ruangan_id[]"
+                        value="{{ $item->id }}"
+                        {{ in_array($item->id, $oldSelectedRooms) ? 'checked' : '' }}
+                        style="width: 18px; height: 18px; cursor: pointer; accent-color: #2563eb;"
+                    >
+                    <span style="font-size: 14px; color: #1e293b; font-weight: 500;">{{ $item->room_name }}</span>
+                </label>
             @endforeach
-
-        </select>
-
+        </div>
+        <small class="form-help">Centang satu atau lebih ruangan yang ingin dipinjam.</small>
     </div>
 
 

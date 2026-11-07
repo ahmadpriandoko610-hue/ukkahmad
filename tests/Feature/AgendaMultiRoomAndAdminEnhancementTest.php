@@ -289,5 +289,71 @@ class AgendaMultiRoomAndAdminEnhancementTest extends TestCase
         $publicCalResponse->assertSee('id="dayEventsModal"', false);
         $publicCalResponse->assertSee('calendar-more-btn', false);
     }
+
+    /**
+     * Requirement: Pengajuan agenda multi-ruangan disatukan menjadi 1 baris/data pada tabel agenda guru dan admin.
+     */
+    public function test_multi_room_agenda_is_displayed_as_one_unified_row_in_guru_and_admin_agenda(): void
+    {
+        $tomorrow = Carbon::tomorrow()->toDateString();
+
+        $this->actingAs($this->guru)->post(route('guru.events.store'), [
+            'judul' => 'Latihan Ujian Bersama',
+            'tanggal' => $tomorrow,
+            'sesi_mulai' => 2,
+            'sesi_selesai' => 4,
+            'ruangan_id' => [$this->room1->id, $this->room2->id, $this->room3->id],
+            'keterangan' => 'Membutuhkan 3 ruangan.',
+        ]);
+
+        // Di database tersimpan 3 record
+        $this->assertEquals(3, Event::where('event_name', 'Latihan Ujian Bersama')->count());
+
+        // Di halaman Guru "Agenda Saya" (/guru/agenda), hanya muncul 1 baris agenda
+        $guruResponse = $this->actingAs($this->guru)->get(route('guru.agenda'));
+        $guruResponse->assertOk();
+        $agendaData = $guruResponse->viewData('agenda');
+        $this->assertCount(1, $agendaData);
+        // Ruangan menampilkan ketiga nama ruangan
+        $guruResponse->assertSee($this->room1->room_name);
+        $guruResponse->assertSee($this->room2->room_name);
+        $guruResponse->assertSee($this->room3->room_name);
+
+        // Di halaman Admin "Kelola Agenda" (/agenda), juga hanya muncul 1 baris agenda
+        $adminResponse = $this->actingAs($this->admin)->get(route('agenda.index'));
+        $adminResponse->assertOk();
+        $adminAgendaData = $adminResponse->viewData('agenda');
+        $this->assertCount(1, $adminAgendaData);
+        $adminResponse->assertSee($this->room1->room_name);
+        $adminResponse->assertSee($this->room2->room_name);
+        $adminResponse->assertSee($this->room3->room_name);
+    }
+
+    /**
+     * Requirement: Tindakan Admin (setujui / tolak / hapus) pada agenda multi-ruangan berlaku untuk semua ruangan terkait.
+     */
+    public function test_admin_approving_or_rejecting_multi_room_agenda_updates_all_rooms(): void
+    {
+        $tomorrow = Carbon::tomorrow()->toDateString();
+
+        $this->actingAs($this->guru)->post(route('guru.events.store'), [
+            'judul' => 'Try Out Mandiri',
+            'tanggal' => $tomorrow,
+            'sesi_mulai' => 2,
+            'sesi_selesai' => 4,
+            'ruangan_id' => [$this->room1->id, $this->room2->id],
+        ]);
+
+        $events = Event::where('event_name', 'Try Out Mandiri')->get();
+        $this->assertCount(2, $events);
+
+        // Admin approve event pertama / primary event
+        $this->actingAs($this->admin)->post(route('admin.agenda.approve', $events->first()));
+
+        // Kedua event di database harus berstatus Disetujui
+        foreach ($events as $event) {
+            $this->assertEquals('Disetujui', $event->fresh()->status);
+        }
+    }
 }
 
