@@ -378,7 +378,10 @@ class Event extends Model
             })->filter()->unique('id')->values();
 
             $primary->rooms = $rooms;
+            $primary->setRelation('rooms', $rooms);
             $primary->rooms_label = $rooms->map(fn($r) => $r->room_name ?: $r->nama_ruangan)->filter()->implode(', ');
+            $primary->setAttribute('rooms_label', $primary->rooms_label);
+            $primary->setAttribute('event_ids', $primary->event_ids);
 
             if ($rooms->count() > 1 && $primary->rooms_label) {
                 $virtualRoom = clone ($primary->room ?: ($primary->ruangan ?: new Room()));

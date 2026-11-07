@@ -10,6 +10,8 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class EventController extends Controller
 {
@@ -32,7 +34,7 @@ class EventController extends Controller
             'my_rooms' => 'sometimes|boolean',
         ]);
 
-        $query = Event::notExpired()->with(['room', 'requester'])
+        $query = Event::notExpired()->with(['room', 'requester', 'user'])
             ->orderBy('date')
             ->orderBy('start_time');
 
@@ -45,7 +47,11 @@ class EventController extends Controller
                 $query->where('status', 'Menunggu');
             }
         } elseif ($authUser && $authUser->role === 'guru') {
-            $query->where('requester_id', $authUser->id);
+            // Gunakan scope visibleInTeacherAgenda untuk mengikuti aturan masa tampil website Laravel
+            $query = Event::visibleInTeacherAgenda()->with(['room', 'requester', 'user'])
+                ->orderBy('date')
+                ->orderBy('start_time')
+                ->where('requester_id', $authUser->id);
         }
 
         if (isset($filters['room_id'])) {
@@ -56,17 +62,18 @@ class EventController extends Controller
             $query->where('status', $filters['status']);
         }
 
-        $events = $query->paginate($filters['per_page'] ?? 100);
+        $rawEvents = $query->get();
+        $groupedEvents = Event::groupEventsForDisplay($rawEvents);
 
         return response()->json([
             'success' => true,
             'message' => 'Data agenda berhasil diambil',
-            'data' => $events->items(),
+            'data' => $groupedEvents->values(),
             'meta' => [
-                'current_page' => $events->currentPage(),
-                'per_page' => $events->perPage(),
-                'total' => $events->total(),
-                'last_page' => $events->lastPage(),
+                'current_page' => 1,
+                'per_page' => $groupedEvents->count(),
+                'total' => $groupedEvents->count(),
+                'last_page' => 1,
             ],
         ]);
     }
@@ -142,18 +149,27 @@ class EventController extends Controller
             $request->merge(['jam_selesai' => $this->sessionTime((int) $request->sesi_selesai + 1)]);
         }
 
+        $rawRoomIds = $request->input('ruangan_id') ?? $request->input('ruangan_ids');
+        $roomIds = is_array($rawRoomIds) ? array_filter($rawRoomIds) : (empty($rawRoomIds) ? [] : [$rawRoomIds]);
+
         $request->validate([
             'judul' => 'required|string|max:255',
             'tanggal' => 'required|date|after:today',
+            'tanggal_selesai' => 'nullable|date|after_or_equal:tanggal',
             'jam_mulai' => 'required|date_format:H:i',
             'jam_selesai' => 'required|date_format:H:i',
-            'ruangan_id' => 'required|exists:rooms,id',
             'keterangan' => 'nullable|string',
         ], [
             'tanggal.after' => 'Peminjaman ruangan harus diajukan minimal H-1 (sehari sebelum tanggal agenda).',
             'judul.required' => 'Judul agenda wajib diisi.',
-            'ruangan_id.required' => 'Ruangan wajib dipilih.',
         ]);
+
+        if (empty($roomIds)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Ruangan wajib dipilih minimal 1.'
+            ], 422);
+        }
 
         // Cek rentang operasional sesi sekolah (06:00 - 18:00)
         if ($request->jam_mulai < '06:00' || $request->jam_mulai > '18:00') {
@@ -178,55 +194,92 @@ class EventController extends Controller
         }
 
         // Cek ruangan aktif
-        $room = Room::whereKey($request->ruangan_id)
-            ->where('is_active', true)
-            ->first();
-
-        if (!$room) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan yang dipilih tidak aktif.'
-            ], 422);
+        $rooms = Room::whereIn('id', $roomIds)->get()->keyBy('id');
+        foreach ($roomIds as $roomId) {
+            $room = $rooms->get($roomId);
+            if (!$room) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan yang dipilih tidak ditemukan.'
+                ], 422);
+            }
+            if (!$room->is_active) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan "' . ($room->room_name ?: $room->nama_ruangan) . '" sedang tidak aktif.'
+                ], 422);
+            }
         }
 
         // Cek bentrok jadwal
-        $conflict = Event::query()
-            ->where('room_id', $request->ruangan_id)
-            ->whereDate('date', $request->tanggal)
-            ->where('status', '!=', 'Ditolak')
-            ->where('start_time', '<', $request->jam_selesai)
-            ->where('end_time', '>', $request->jam_mulai)
-            ->exists();
+        $endDate = $request->input('tanggal_selesai') ?: $request->input('tanggal');
+        foreach ($roomIds as $roomId) {
+            $conflict = Event::query()
+                ->where('room_id', $roomId)
+                ->where(function ($q) use ($request, $endDate) {
+                    $q->whereDate('date', '<=', $endDate)
+                        ->whereDate(DB::raw('COALESCE(end_date, date)'), '>=', $request->tanggal);
+                })
+                ->where('status', '!=', 'Ditolak')
+                ->where('start_time', '<', $request->jam_selesai)
+                ->where('end_time', '>', $request->jam_mulai)
+                ->exists();
 
-        if ($conflict) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan sudah terpakai pada waktu tersebut.'
-            ], 422);
+            if ($conflict) {
+                $room = $rooms->get($roomId);
+                $roomName = $room ? ($room->room_name ?: $room->nama_ruangan) : "ID: $roomId";
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan "' . $roomName . '" sudah terpakai pada waktu tersebut.'
+                ], 422);
+            }
         }
 
         $requesterId = $authUser->id;
 
-        // Simpan agenda
-        $event = Event::create([
-            'event_name' => $request->judul,
-            'date' => $request->tanggal,
-            'start_time' => $request->jam_mulai,
-            'end_time' => $request->jam_selesai,
-            'requester_id' => $requesterId,
-            'room_id' => $request->ruangan_id,
-            'status' => 'Menunggu',
-            'approved_by' => null,
-            'move_reason' => null,
-            'description' => $request->keterangan,
-        ]);
+        // Simpan agenda (mendukung multi-ruangan dengan group_id)
+        $createdEvents = DB::transaction(function () use ($roomIds, $request, $requesterId, $endDate) {
+            $groupId = (string) Str::uuid();
+            $hasGroupId = Schema::hasColumn('events', 'group_id');
+            $events = [];
 
-        $event->load(['room', 'requester']);
+            foreach ($roomIds as $roomId) {
+                $payload = [
+                    'event_name' => $request->judul,
+                    'date' => $request->tanggal,
+                    'end_date' => $request->filled('tanggal_selesai') ? $request->tanggal_selesai : null,
+                    'start_time' => $request->jam_mulai,
+                    'end_time' => $request->jam_selesai,
+                    'requester_id' => $requesterId,
+                    'room_id' => $roomId,
+                    'status' => 'Menunggu',
+                    'approved_by' => null,
+                    'move_reason' => null,
+                    'description' => $request->keterangan,
+                ];
+
+                if ($hasGroupId) {
+                    $payload['group_id'] = $groupId;
+                }
+
+                $events[] = Event::create($payload);
+            }
+
+            return $events;
+        });
+
+        $primary = $createdEvents[0];
+        $primary->load(['room', 'requester']);
+
+        $roomCount = count($roomIds);
+        $message = $roomCount > 1
+            ? "Agenda berhasil diajukan untuk {$roomCount} ruangan dan menunggu persetujuan PIC."
+            : 'Agenda berhasil diajukan dan menunggu persetujuan PIC.';
 
         return response()->json([
             'success' => true,
-            'message' => 'Agenda berhasil diajukan dan menunggu persetujuan PIC.',
-            'data' => $event
+            'message' => $message,
+            'data' => $primary
         ], 201);
     }
 
@@ -267,10 +320,17 @@ class EventController extends Controller
             ], 422);
         }
 
-        $event->update([
-            'status' => 'Disetujui',
-            'approved_by' => $authUser->id,
-        ]);
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->update([
+                'status' => 'Disetujui',
+                'approved_by' => $authUser->id,
+            ]);
+        }
 
         $event->load(['room', 'requester', 'approver']);
 
@@ -324,12 +384,19 @@ class EventController extends Controller
             'alasan.required' => 'Alasan penolakan agenda wajib diisi.',
         ]);
 
-        $event->update([
-            'status' => 'Ditolak',
-            'approved_by' => $authUser->id,
-            'rejection_reason' => $request->alasan,
-            'rejected_at' => now(),
-        ]);
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->update([
+                'status' => 'Ditolak',
+                'approved_by' => $authUser->id,
+                'rejection_reason' => $request->alasan,
+                'rejected_at' => now(),
+            ]);
+        }
 
         $event->load(['room', 'requester', 'approver']);
 
@@ -568,7 +635,14 @@ class EventController extends Controller
             return response()->json(['success' => false, 'message' => 'Hanya agenda berstatus Menunggu yang dapat dihapus.'], 422);
         }
 
-        $event->delete();
+        $sisters = $event->getSisterEvents();
+        if ($sisters->isEmpty()) {
+            $sisters = collect([$event]);
+        }
+
+        foreach ($sisters as $sister) {
+            $sister->delete();
+        }
 
         return response()->json([
             'success' => true,

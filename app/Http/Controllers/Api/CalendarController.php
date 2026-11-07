@@ -23,9 +23,11 @@ class CalendarController extends Controller
             $query->where('room_id', $request->input('room_id'));
         }
 
-        $events = $query->orderBy('date')
+        $rawEvents = $query->orderBy('date')
             ->orderBy('start_time')
             ->get();
+
+        $events = Event::groupEventsForDisplay($rawEvents);
 
         return response()->json([
             'success' => true,
