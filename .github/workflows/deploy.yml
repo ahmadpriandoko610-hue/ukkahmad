@@ -2736,7 +2736,7 @@ jobs:
             --max-time 180 \
             --request POST \
             --data-urlencode "token=${DEPLOY_TOKEN}" \
-            "https://ahmad-rapi.web.id/auto_extract.php")
+           "[https://ahmad-rapi.web.id/.deploy_staging/auto_extract.php](https://ahmad-rapi.web.id/.deploy_staging/auto_extract.php)"
           CURL_STATUS=$?
           set -e
 
