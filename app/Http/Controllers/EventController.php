@@ -121,7 +121,7 @@ class EventController extends Controller
      */
     public function create()
     {
-        $ruangan = Room::orderBy('room_name')->get();
+        $ruangan = Room::sortRooms(Room::all());
 
         if (Auth::user()->role === 'guru') {
             return view('teacher.event.create', compact('ruangan'));
@@ -321,7 +321,7 @@ class EventController extends Controller
 
         $agenda = $event;
 
-        $ruangan = Room::orderBy('room_name')->get();
+        $ruangan = Room::sortRooms(Room::all());
 
         return view(
             'admin.event.edit',
@@ -954,13 +954,11 @@ public function picCalendar()
             return redirect()->route('agenda.index')->with('error', 'Ruangan agenda yang ditolak tidak dapat dipindahkan.');
         }
 
-        $rooms = Room::where(
-                'is_active',
-                true
-            )
-            ->whereKeyNot($event->room_id)
-            ->orderBy('room_name')
-            ->get();
+        $rooms = Room::sortRooms(
+            Room::where('is_active', true)
+                ->whereKeyNot($event->room_id)
+                ->get()
+        );
 
         return view(
             'admin.event.move',

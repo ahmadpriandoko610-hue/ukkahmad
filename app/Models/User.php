@@ -49,6 +49,19 @@ class User extends Authenticatable
         ];
     }
 
+    /**
+     * Model boot events:
+     * Pastikan user non-PIC tidak pernah menyimpan nomor WhatsApp di database.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (User $user) {
+            if ($user->role !== 'pic') {
+                $user->phone = null;
+            }
+        });
+    }
+
     public function getRoleLabelAttribute(): string
     {
         if ($this->role === 'guru') {

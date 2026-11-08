@@ -160,9 +160,13 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="form-group">
         <label for="sesi_mulai">Sesi Mulai</label>
         <select id="sesi_mulai" name="sesi_mulai" class="form-control" required>
-            @php($jamAwalDaftarSesi = \Carbon\Carbon::createFromTime(7, 30))
+            @php
+                $jamAwalDaftarSesi = \Carbon\Carbon::createFromTime(7, 30);
+            @endphp
             @for($sesi = 1; $sesi <= 14; $sesi++)
-                @php($jamMulai = $jamAwalDaftarSesi->copy()->addMinutes(($sesi - 1) * 45))
+                @php
+                    $jamMulai = $jamAwalDaftarSesi->copy()->addMinutes(($sesi - 1) * 45);
+                @endphp
                 <option value="{{ $sesi }}" {{ old('sesi_mulai', $sesiMulaiTersimpan) == $sesi ? 'selected' : '' }}>Sesi {{ $sesi }} ({{ $jamMulai->format('H:i') }} - {{ $jamMulai->copy()->addMinutes(45)->format('H:i') }})</option>
             @endfor
         </select>
@@ -172,9 +176,13 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="form-group">
         <label for="sesi_selesai">Sesi Selesai</label>
         <select id="sesi_selesai" name="sesi_selesai" class="form-control" required>
-            @php($jamAwalDaftarSesi = \Carbon\Carbon::createFromTime(7, 30))
+            @php
+                $jamAwalDaftarSesi = \Carbon\Carbon::createFromTime(7, 30);
+            @endphp
             @for($sesi = 1; $sesi <= 14; $sesi++)
-                @php($jamMulai = $jamAwalDaftarSesi->copy()->addMinutes(($sesi - 1) * 45))
+                @php
+                    $jamMulai = $jamAwalDaftarSesi->copy()->addMinutes(($sesi - 1) * 45);
+                @endphp
                 <option value="{{ $sesi }}" {{ old('sesi_selesai', $sesiSelesaiTersimpan) == $sesi ? 'selected' : '' }}>Sesi {{ $sesi }} ({{ $jamMulai->format('H:i') }} - {{ $jamMulai->copy()->addMinutes(45)->format('H:i') }})</option>
             @endfor
         </select>

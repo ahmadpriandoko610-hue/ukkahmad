@@ -50,9 +50,9 @@ class ComplaintController extends Controller
                 ->firstOrFail();
         }
 
-        $rooms = Room::where('is_active', true)
-            ->orderBy('room_name')
-            ->get();
+        $rooms = Room::sortRooms(
+            Room::where('is_active', true)->get()
+        );
 
         return view('complaints.create', compact('rooms', 'agenda'));
     }

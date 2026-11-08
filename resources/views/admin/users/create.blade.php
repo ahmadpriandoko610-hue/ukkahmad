@@ -33,18 +33,41 @@
 
     <div class="form-group">
         <label>Nama</label>
-        <input type="text" name="name" class="form-control" required>
+        <input type="text" name="name" class="form-control" value="{{ old('name') }}" required>
+        @error('name')
+            <small class="form-error">{{ $message }}</small>
+        @enderror
     </div>
 
     <div class="form-group">
         <label>Email</label>
-        <input type="email" name="email" class="form-control" required>
+        <input type="email" name="email" class="form-control" value="{{ old('email') }}" required>
+        @error('email')
+            <small class="form-error">{{ $message }}</small>
+        @enderror
     </div>
 
+    @php
+        $initialRole = old('role', 'admin');
+        $isPic = $initialRole === 'pic';
+    @endphp
+
     <div class="form-group">
-        <label>Nomor WhatsApp</label>
-        <input type="text" name="phone" class="form-control" value="{{ old('phone') }}" placeholder="Contoh: 081234567890">
-        <small>Diisi khususnya untuk user dengan role PIC.</small>
+        <label for="phone">Nomor WhatsApp</label>
+        <input
+            type="text"
+            name="phone"
+            id="phone"
+            class="form-control"
+            value="{{ $isPic ? old('phone') : '' }}"
+            placeholder="{{ $isPic ? 'Contoh: 081234567890' : 'Khusus untuk PIC' }}"
+            {{ $isPic ? '' : 'disabled' }}
+            style="{{ $isPic ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
+        >
+        <small id="phoneHelp">{{ $isPic ? 'Diisi khususnya untuk user dengan role PIC.' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.' }}</small>
+        @error('phone')
+            <small class="form-error">{{ $message }}</small>
+        @enderror
     </div>
 
     <div class="form-group">
@@ -53,19 +76,25 @@
             <input type="password" name="password" id="password" class="form-control" required>
             <span class="toggle-password" id="togglePassword" role="button" tabindex="0" aria-label="Tampilkan password" aria-pressed="false">👁</span>
         </div>
+        @error('password')
+            <small class="form-error">{{ $message }}</small>
+        @enderror
     </div>
 
     <div class="form-group">
-        <label>Role</label>
+        <label for="role">Role</label>
 
-        <select name="role" class="form-control">
+        <select name="role" id="role" class="form-control" required>
 
-            <option value="admin">Admin</option>
-            <option value="pic">PIC</option>
-            <option value="guru">Guru / Organisasi</option>
+            <option value="admin" {{ old('role', 'admin') == 'admin' ? 'selected' : '' }}>Admin</option>
+            <option value="pic" {{ old('role') == 'pic' ? 'selected' : '' }}>PIC</option>
+            <option value="guru" {{ old('role') == 'guru' ? 'selected' : '' }}>Guru / Organisasi</option>
+            <option value="siswa" {{ old('role') == 'siswa' ? 'selected' : '' }}>Siswa</option>
 
         </select>
-
+        @error('role')
+            <small class="form-error">{{ $message }}</small>
+        @enderror
     </div>
 
     <div class="form-actions">
@@ -81,23 +110,75 @@
 </form>
 
 <script>
-const password = document.getElementById('password');
-const toggle = document.getElementById('togglePassword');
+document.addEventListener('DOMContentLoaded', function () {
+    const password = document.getElementById('password');
+    const toggle = document.getElementById('togglePassword');
 
-function togglePasswordVisibility() {
-    const isHidden = password.type === 'password';
-    password.type = isHidden ? 'text' : 'password';
-    toggle.setAttribute('aria-pressed', String(isHidden));
-    toggle.setAttribute('aria-label', isHidden ? 'Sembunyikan password' : 'Tampilkan password');
-}
+    if (password && toggle) {
+        function togglePasswordVisibility() {
+            const isHidden = password.type === 'password';
+            password.type = isHidden ? 'text' : 'password';
+            toggle.setAttribute('aria-pressed', String(isHidden));
+            toggle.setAttribute('aria-label', isHidden ? 'Sembunyikan password' : 'Tampilkan password');
+        }
 
-toggle.addEventListener('click', togglePasswordVisibility);
-toggle.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        togglePasswordVisibility();
+        toggle.addEventListener('click', togglePasswordVisibility);
+        toggle.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                togglePasswordVisibility();
+            }
+        });
+    }
+
+    const roleSelect = document.getElementById('role');
+    const phoneInput = document.getElementById('phone');
+    const phoneHelp = document.getElementById('phoneHelp');
+
+    if (roleSelect && phoneInput) {
+        function updateWhatsAppField() {
+            const isPic = roleSelect.value === 'pic';
+
+            if (isPic) {
+                phoneInput.disabled = false;
+                phoneInput.readOnly = false;
+                phoneInput.placeholder = 'Contoh: 081234567890';
+                phoneInput.style.backgroundColor = '';
+                phoneInput.style.cursor = '';
+                phoneInput.style.color = '';
+                if (phoneHelp) {
+                    phoneHelp.textContent = 'Diisi khususnya untuk user dengan role PIC.';
+                }
+            } else {
+                phoneInput.value = '';
+                phoneInput.disabled = true;
+                phoneInput.readOnly = true;
+                phoneInput.placeholder = 'Khusus untuk PIC';
+                phoneInput.style.backgroundColor = '#f1f5f9';
+                phoneInput.style.cursor = 'not-allowed';
+                phoneInput.style.color = '#94a3b8';
+                if (phoneHelp) {
+                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.';
+                }
+            }
+        }
+
+        roleSelect.addEventListener('change', updateWhatsAppField);
+
+        phoneInput.addEventListener('keydown', function (e) {
+            if (roleSelect.value !== 'pic') {
+                e.preventDefault();
+            }
+        });
+
+        phoneInput.addEventListener('paste', function (e) {
+            if (roleSelect.value !== 'pic') {
+                e.preventDefault();
+            }
+        });
+
+        updateWhatsAppField();
     }
 });
 </script>
-
 @endsection

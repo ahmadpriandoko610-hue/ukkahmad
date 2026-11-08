@@ -116,9 +116,13 @@
         <label for="sesi_mulai">Sesi Mulai</label>
         <select name="sesi_mulai" id="sesi_mulai" class="form-control" required>
             <option value="">-- Pilih Sesi Mulai --</option>
-            @php($jamAwalSesi = \Carbon\Carbon::createFromTime(7, 30))
+            @php
+                $jamAwalSesi = \Carbon\Carbon::createFromTime(7, 30);
+            @endphp
             @for($sesi = 1; $sesi <= 14; $sesi++)
-                @php($jamMulai = $jamAwalSesi->copy()->addMinutes(($sesi - 1) * 45))
+                @php
+                    $jamMulai = $jamAwalSesi->copy()->addMinutes(($sesi - 1) * 45);
+                @endphp
                 <option value="{{ $sesi }}" {{ old('sesi_mulai') == $sesi ? 'selected' : '' }}>Sesi {{ $sesi }} ({{ $jamMulai->format('H:i') }} - {{ $jamMulai->copy()->addMinutes(45)->format('H:i') }})</option>
             @endfor
         </select>
@@ -129,9 +133,13 @@
         <label for="sesi_selesai">Sesi Selesai</label>
         <select name="sesi_selesai" id="sesi_selesai" class="form-control" required>
             <option value="">-- Pilih Sesi Selesai --</option>
-            @php($jamAwalSesi = \Carbon\Carbon::createFromTime(7, 30))
+            @php
+                $jamAwalSesi = \Carbon\Carbon::createFromTime(7, 30);
+            @endphp
             @for($sesi = 1; $sesi <= 14; $sesi++)
-                @php($jamMulai = $jamAwalSesi->copy()->addMinutes(($sesi - 1) * 45))
+                @php
+                    $jamMulai = $jamAwalSesi->copy()->addMinutes(($sesi - 1) * 45);
+                @endphp
                 <option value="{{ $sesi }}" {{ old('sesi_selesai') == $sesi ? 'selected' : '' }}>Sesi {{ $sesi }} ({{ $jamMulai->format('H:i') }} - {{ $jamMulai->copy()->addMinutes(45)->format('H:i') }})</option>
             @endfor
         </select>
@@ -144,7 +152,9 @@
             Pilih Ruangan <span style="color: #ef4444;">*</span> <small style="color: #64748b; font-weight: normal;">(Bisa pilih lebih dari 1 ruangan)</small>
         </label>
 
-        @php($oldSelectedRooms = (array) old('ruangan_id', []))
+        @php
+            $oldSelectedRooms = (array) old('ruangan_id', []);
+        @endphp
 
         <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; max-height: 260px; overflow-y: auto;">
             @foreach($ruangan as $item)

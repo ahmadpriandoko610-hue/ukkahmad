@@ -35,26 +35,31 @@ class UserController extends Controller
      * Menyimpan user baru.
      */
     public function store(Request $request)
-{
-    $request->validate([
-        'name' => 'required',
-        'email' => 'required|email|unique:users,email',
-        'password' => 'required|min:6',
-        'role' => 'required|in:admin,pic,guru',
-        'phone' => 'nullable|string|max:20',
-    ]);
+    {
+        $isPic = $request->role === 'pic';
 
-    User::create([
-        'name' => $request->name,
-        'email' => $request->email,
-        'password' => bcrypt($request->password),
-        'role' => $request->role,
-        'phone' => $request->phone,
-    ]);
+        $request->validate([
+            'name' => 'required',
+            'email' => 'required|email|unique:users,email',
+            'password' => 'required|min:6',
+            'role' => 'required|in:admin,pic,guru,siswa',
+            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
+        ]);
 
-    return redirect()->route('users.index')
-                     ->with('success', 'User berhasil ditambahkan.');
-}
+        $rawPhone = trim((string) $request->phone);
+        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
+
+        User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => bcrypt($request->password),
+            'role' => $request->role,
+            'phone' => $phone,
+        ]);
+
+        return redirect()->route('users.index')
+                         ->with('success', 'User berhasil ditambahkan.');
+    }
 
     /**
      * Menampilkan detail user.
@@ -75,31 +80,36 @@ class UserController extends Controller
     /**
      * Mengupdate user.
      */
-   public function update(Request $request, User $user)
-{
-    $request->validate([
-        'name' => 'required',
-        'email' => 'required|email|unique:users,email,' . $user->id,
-        'role' => 'required|in:admin,pic,guru',
-        'phone' => 'nullable|string|max:20',
-    ]);
+    public function update(Request $request, User $user)
+    {
+        $isPic = $request->role === 'pic';
 
-    $data = [
-        'name' => $request->name,
-        'email' => $request->email,
-        'role' => $request->role,
-        'phone' => $request->phone,
-    ];
+        $request->validate([
+            'name' => 'required',
+            'email' => 'required|email|unique:users,email,' . $user->id,
+            'role' => 'required|in:admin,pic,guru,siswa',
+            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
+        ]);
 
-    if ($request->filled('password')) {
-        $data['password'] = bcrypt($request->password);
+        $rawPhone = trim((string) $request->phone);
+        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
+
+        $data = [
+            'name' => $request->name,
+            'email' => $request->email,
+            'role' => $request->role,
+            'phone' => $phone,
+        ];
+
+        if ($request->filled('password')) {
+            $data['password'] = bcrypt($request->password);
+        }
+
+        $user->update($data);
+
+        return redirect()->route('users.index')
+                         ->with('success', 'Data user berhasil diperbarui.');
     }
-
-    $user->update($data);
-
-    return redirect()->route('users.index')
-                     ->with('success', 'Data user berhasil diperbarui.');
-}
 
     /**
      * Menghapus user.

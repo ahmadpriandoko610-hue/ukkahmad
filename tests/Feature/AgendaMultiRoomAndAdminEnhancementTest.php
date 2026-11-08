@@ -355,5 +355,59 @@ class AgendaMultiRoomAndAdminEnhancementTest extends TestCase
             $this->assertEquals('Disetujui', $event->fresh()->status);
         }
     }
+
+    /**
+     * Pastikan halaman form tambah agenda admin dapat dibuka tanpa HTTP 500 (ParseError).
+     */
+    public function test_admin_create_agenda_view_loads_successfully_without_parse_error(): void
+    {
+        $response = $this->actingAs($this->admin)->get(route('agenda.create'));
+
+        $response->assertOk();
+        $response->assertSee('Tambah Agenda');
+        $response->assertSee('Sesi Mulai');
+        $response->assertSee('Sesi Selesai');
+        $response->assertSee('Sesi 1 (07:30 - 08:15)');
+        $response->assertSee('Sesi 14 (17:15 - 18:00)');
+    }
+
+    /**
+     * Pastikan halaman form edit agenda admin dapat dibuka tanpa HTTP 500 (ParseError).
+     */
+    public function test_admin_edit_agenda_view_loads_successfully_without_parse_error(): void
+    {
+        $event = Event::create([
+            'event_name' => 'Agenda Evaluasi',
+            'date' => Carbon::tomorrow()->toDateString(),
+            'start_time' => '07:30:00',
+            'end_time' => '09:00:00',
+            'requester_id' => $this->admin->id,
+            'room_id' => $this->room1->id,
+            'status' => 'Disetujui',
+        ]);
+
+        $response = $this->actingAs($this->admin)->get(route('agenda.edit', $event));
+
+        $response->assertOk();
+        $response->assertSee('Edit Agenda');
+        $response->assertSee('Sesi Mulai');
+        $response->assertSee('Sesi Selesai');
+        $response->assertSee('Sesi 1 (07:30 - 08:15)');
+    }
+
+    /**
+     * Pastikan halaman form tambah agenda guru dapat dibuka tanpa HTTP 500 (ParseError).
+     */
+    public function test_guru_create_agenda_view_loads_successfully_without_parse_error(): void
+    {
+        $response = $this->actingAs($this->guru)->get(route('guru.events.create'));
+
+        $response->assertOk();
+        $response->assertSee('Ajukan Agenda');
+        $response->assertSee('Sesi Mulai');
+        $response->assertSee('Sesi Selesai');
+        $response->assertSee('Sesi 1 (07:30 - 08:15)');
+        $response->assertSee('Sesi 14 (17:15 - 18:00)');
+    }
 }
 

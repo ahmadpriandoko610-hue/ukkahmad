@@ -111,7 +111,7 @@
                 {{-- NO --}}
 
                 <td>
-                    {{ $loop->iteration }}
+                    {{ method_exists($rooms, 'firstItem') && $rooms->firstItem() ? ($rooms->firstItem() + $loop->index) : $loop->iteration }}
                 </td>
 
 
@@ -220,5 +220,11 @@
     </tbody>
 
 </table>
+
+@if(method_exists($rooms, 'hasPages') && $rooms->hasPages())
+<div style="margin-top:20px;">
+    {{ $rooms->withQueryString()->links() }}
+</div>
+@endif
 
 @endsection

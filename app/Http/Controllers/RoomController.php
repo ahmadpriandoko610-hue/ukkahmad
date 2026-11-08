@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Room;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class RoomController extends Controller
 {
@@ -15,7 +16,7 @@ class RoomController extends Controller
     {
         $search = trim((string) $request->query('search', ''));
 
-        $rooms = Room::with('pic')
+        $query = Room::with('pic')
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($query) use ($search) {
                     $query->where('room_name', 'like', "%{$search}%")
@@ -26,9 +27,25 @@ class RoomController extends Controller
                                 ->orWhere('email', 'like', "%{$search}%");
                         });
                 });
-            })
-            ->orderBy('room_name')
-            ->get();
+            });
+
+        $rawRooms = $query->get();
+        $sortedRooms = Room::sortRooms($rawRooms);
+
+        $perPage = 10;
+        $currentPage = LengthAwarePaginator::resolveCurrentPage();
+        $currentItems = $sortedRooms->slice(($currentPage - 1) * $perPage, $perPage)->values();
+
+        $rooms = new LengthAwarePaginator(
+            $currentItems,
+            $sortedRooms->count(),
+            $perPage,
+            $currentPage,
+            [
+                'path' => LengthAwarePaginator::resolveCurrentPath(),
+                'query' => $request->query(),
+            ]
+        );
 
         return view('admin.rooms.index', compact('rooms', 'search'));
     }
