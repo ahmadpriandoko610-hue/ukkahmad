@@ -136,6 +136,8 @@ class RoomMoveWhatsAppNotificationTest extends TestCase
             $indexResponse->assertSeeText('LAB 1');
             $indexResponse->assertSeeText('Budi Hartono');
             $indexResponse->assertSee(route('events.move.whatsapp', $event->id));
+            $indexResponse->assertDontSeeText('WhatsApp akan terbuka dengan pesan yang sudah terisi.');
+            $indexResponse->assertDontSeeText('Periksa kembali lalu tekan Kirim secara manual.');
             $indexResponse->assertDontSee('081234567890');
             $indexResponse->assertDontSee('6281234567890');
 

@@ -43,10 +43,6 @@
                         Kirim Pemberitahuan WhatsApp kepada Guru
                     </button>
                 </form>
-
-                <span style="font-size: 12.5px; color: #64748b;">
-                    WhatsApp akan terbuka dengan pesan yang sudah terisi. Periksa kembali lalu tekan Kirim secara manual.
-                </span>
             </div>
         @else
             <div class="alert-warning" style="margin: 12px 0 0 0;">
