@@ -5062,10 +5062,35 @@ class DeploymentSafetyTest extends TestCase
                 }
             }
 
+            $viewsCacheDir = $ukkRapi . '/storage/framework/views';
+            $viewsCacheFiles = [];
+            if (is_dir($viewsCacheDir)) {
+                foreach (scandir($viewsCacheDir) ?: [] as $vf) {
+                    if ($vf !== '.' && $vf !== '..') {
+                        $viewsCacheFiles[] = $vf;
+                    }
+                }
+                sort($viewsCacheFiles);
+            }
+
+            $postDeployMtimes = [];
+            foreach ([
+                'resources/views/admin/users/index.blade.php',
+                'app/Http/Controllers/UserController.php',
+            ] as $relCheck) {
+                $fullCheck = $ukkRapi . '/' . $relCheck;
+                if (file_exists($fullCheck)) {
+                    clearstatcache(true, $fullCheck);
+                    $postDeployMtimes[$relCheck] = filemtime($fullCheck);
+                }
+            }
+
             return [
                 'output' => $fullOutput,
                 'exitCode' => $exitCode,
                 'extracted' => $extracted,
+                'viewsCacheFiles' => $viewsCacheFiles,
+                'postDeployMtimes' => $postDeployMtimes,
                 'stagingDirExists' => is_dir($stagingDir),
                 'zipInStagingExists' => file_exists($stagingDir . '/deploy_payload.zip'),
                 'zipInPublicExists' => file_exists($pubHtml . '/deploy_payload.zip'),
@@ -5740,6 +5765,62 @@ class DeploymentSafetyTest extends TestCase
         $this->assertStringContainsString('--insecure', $doc);
         $this->assertStringContainsString('FTPS', $doc);
         $this->assertStringContainsString('SFTP', $doc);
+    }
+
+    /**
+     * Uji 144: auto_extract.php membersihkan compiled Blade views lama dan menyegarkan mtime view/controller setelah ekstraksi
+     */
+    public function test_production_script_clears_stale_compiled_views_and_refreshes_extracted_mtimes(): void
+    {
+        $baseDir = sys_get_temp_dir() . '/rapi_clear_views_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $validToken = 'clear_views_deploy_token_2026';
+        $zipPath = $baseDir . '/valid_payload.zip';
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->setPassword($validToken);
+        $zip->addFromString('ukk_rapi/bootstrap/app.php', '<?php // bootstrap');
+        $zip->addFromString('ukk_rapi/vendor/autoload.php', '<?php // autoload');
+        $zip->addFromString('ukk_rapi/app/Http/Controllers/UserController.php', '<?php // updated controller');
+        $zip->addFromString('ukk_rapi/resources/views/admin/users/index.blade.php', '@if($user->rooms->isEmpty()) Hapus @endif');
+        $zip->addFromString('public_html/index.php', '<?php // updated index');
+        if (method_exists($zip, 'setMtimeName')) {
+            $oldUtcTs = time() - 28800; // Simulasi skew DOS timestamp ZIP 8 jam lebih lama dari sekarang
+            $zip->setMtimeName('ukk_rapi/resources/views/admin/users/index.blade.php', $oldUtcTs);
+            $zip->setMtimeName('ukk_rapi/app/Http/Controllers/UserController.php', $oldUtcTs);
+        }
+        $zip->close();
+
+        $beforeDeployTs = time() - 2;
+
+        $res = $this->runProductionDeployScriptDetailed($zipPath, [
+            'token' => $validToken,
+            'post_token' => $validToken,
+            'zipInStaging' => true,
+            'withStagingShieldFiles' => true,
+            'setup' => function (string $sandboxDir, string $pubHtml, string $ukkRapi) {
+                $viewsDir = $ukkRapi . '/storage/framework/views';
+                @mkdir($viewsDir, 0755, true);
+                file_put_contents($viewsDir . '/.gitignore', "*\n!.gitignore\n");
+                file_put_contents($viewsDir . '/deadbeef1234567890.php', '<?php // stale compiled blade view');
+                @mkdir($pubHtml . '/storage', 0755, true);
+            },
+        ]);
+
+        if (str_contains($res['output'], 'DEPLOY_SUCCESS')) {
+            $this->assertSame(['.gitignore'], $res['viewsCacheFiles']);
+            $this->assertArrayHasKey('resources/views/admin/users/index.blade.php', $res['postDeployMtimes']);
+            $this->assertArrayHasKey('app/Http/Controllers/UserController.php', $res['postDeployMtimes']);
+            $this->assertGreaterThanOrEqual($beforeDeployTs, $res['postDeployMtimes']['resources/views/admin/users/index.blade.php']);
+            $this->assertGreaterThanOrEqual($beforeDeployTs, $res['postDeployMtimes']['app/Http/Controllers/UserController.php']);
+        } else {
+            // Fallback Windows non-admin yang menolak symlink pada folder public/storage
+            $this->assertStringContainsString('SYMLINK_FAILED', $res['output']);
+            $this->assertStringContainsString('[ROLLBACK_SUCCESSFUL]', $res['output']);
+        }
+
+        File::deleteDirectory($baseDir);
     }
 }
 

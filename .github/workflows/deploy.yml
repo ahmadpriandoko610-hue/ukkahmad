@@ -2613,6 +2613,59 @@ jobs:
                       $handleFailureAndRollback('APPLICATION_INTEGRITY_VERIFICATION_FAILED', 'Berkas inti tidak lengkap setelah ekstraksi. Rollback telah dijalankan.');
                   }
 
+                  // 4b. Bersihkan compiled Blade views lama & segarkan mtime berkas aplikasi/view
+                  //     agar perbedaan timezone ZIP vs server cPanel tidak mempertahankan view/opcache usang.
+                  $compiledViewsDir = $ukkRapiRoot . '/storage/framework/views';
+                  if (is_dir($compiledViewsDir) && !is_link($compiledViewsDir)) {
+                      $viewCacheEntries = scandir($compiledViewsDir);
+                      if ($viewCacheEntries !== false) {
+                          foreach ($viewCacheEntries as $vcEntry) {
+                              if ($vcEntry === '.' || $vcEntry === '..' || !str_ends_with($vcEntry, '.php')) {
+                                  continue;
+                              }
+                              $vcPath = $compiledViewsDir . '/' . $vcEntry;
+                              if (is_file($vcPath) && !is_link($vcPath)) {
+                                  if (function_exists('opcache_invalidate')) {
+                                      opcache_invalidate($vcPath, true);
+                                  }
+                                  unlink($vcPath);
+                              }
+                          }
+                      }
+                  }
+
+                  $refreshDirs = [
+                      $ukkRapiRoot . '/app',
+                      $ukkRapiRoot . '/config',
+                      $ukkRapiRoot . '/resources/views',
+                      $ukkRapiRoot . '/routes',
+                  ];
+                  $nowTs = time();
+                  foreach ($refreshDirs as $rDir) {
+                      if (!is_dir($rDir) || is_link($rDir)) {
+                          continue;
+                      }
+                      $rIt = new RecursiveIteratorIterator(
+                          new RecursiveDirectoryIterator($rDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                          RecursiveIteratorIterator::SELF_FIRST
+                      );
+                      foreach ($rIt as $rItem) {
+                          if ($rItem->isFile() && !$rItem->isLink()) {
+                              $rPath = $rItem->getPathname();
+                              touch($rPath, $nowTs);
+                              if (str_ends_with($rPath, '.php') && function_exists('opcache_invalidate')) {
+                                  opcache_invalidate($rPath, true);
+                              }
+                          }
+                      }
+                  }
+                  if (is_file(__DIR__ . '/index.php') && !is_link(__DIR__ . '/index.php')) {
+                      touch(__DIR__ . '/index.php', $nowTs);
+                      if (function_exists('opcache_invalidate')) {
+                          opcache_invalidate(__DIR__ . '/index.php', true);
+                      }
+                  }
+
                   // 5. Buka maintenance mode HANYA jika bukan maintenance pra-deployment dari Admin
                   if (!$wasAlreadyInMaintenance && file_exists($downFile)) {
                       $unlinked = unlink($downFile);
