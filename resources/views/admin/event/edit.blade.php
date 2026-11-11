@@ -51,6 +51,7 @@
 
     @csrf
     @method('PUT')
+    <input type="hidden" name="current_room_id" value="{{ $agenda->room_id }}">
 
 
     {{-- JUDUL --}}
@@ -183,7 +184,35 @@
 
         </select>
 
+        @if($agenda->status !== 'Disetujui')
+            <small class="form-help" style="color: #b45309;">
+                Catatan: Agenda berstatus <strong>{{ $agenda->status }}</strong> hanya dapat diperbarui informasi jadwal/detailnya tanpa memindahkan ruangan (pemindahan ruangan hanya untuk agenda <strong>Disetujui</strong>).
+            </small>
+        @else
+            <small class="form-help">Mengganti ruangan pada form ini akan membuat notifikasi pemindahan ruangan dan memperbarui alasan pemindahan.</small>
+        @endif
+
     </div>
+
+
+    {{-- ALASAN PEMINDAHAN RUANGAN (OPSIONAL SAAT RUANGAN DIGANTI) --}}
+    @if($agenda->status === 'Disetujui')
+        <div class="form-group">
+            <label for="move_reason">
+                Alasan Pemindahan Ruangan <small style="color: #64748b; font-weight: normal;">(Opsional, isi bila ruangan diubah)</small>
+            </label>
+
+            <input
+                type="text"
+                id="move_reason"
+                name="move_reason"
+                class="form-control"
+                maxlength="1000"
+                value="{{ old('move_reason') }}"
+                placeholder="Contoh: Penyesuaian kebutuhan fasilitas oleh Admin"
+            >
+        </div>
+    @endif
 
 
     {{-- KETERANGAN --}}

@@ -95,9 +95,73 @@
         </div>
     @endif
 
+    <div class="detail-section">
+        <span class="detail-label">Riwayat Status Notifikasi WhatsApp Pemindahan Ruangan</span>
+        @if($event->whatsappNotificationLogs->isEmpty())
+            <p class="detail-description">Belum ada riwayat notifikasi WhatsApp untuk agenda ini.</p>
+        @else
+            <div class="table-container" style="margin-top: 10px;">
+                <table class="agenda-table data-table-medium">
+                    <thead>
+                        <tr>
+                            <th>Waktu (WIB)</th>
+                            <th>Perpindahan</th>
+                            <th>Penerima (Tersamar)</th>
+                            <th>Template</th>
+                            <th>Mode</th>
+                            <th>Status</th>
+                            <th>Percobaan</th>
+                            <th>Referensi Meta / Kode</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($event->whatsappNotificationLogs as $waLog)
+                            @php
+                                $badgeClass = match ($waLog->status) {
+                                    'accepted', 'delivered', 'read' => 'badge-success',
+                                    'failed', 'connection_failed' => 'badge-danger',
+                                    'pending', 'ambiguous_timeout', 'dry_run', 'skipped_no_consent', 'skipped_not_allowlisted', 'unconfigured' => 'badge-warning',
+                                    default => 'status-badge',
+                                };
+                            @endphp
+                            <tr>
+                                <td>{{ $waLog->created_at?->timezone('Asia/Jakarta')->format('d-m-Y H:i') }} WIB</td>
+                                <td>
+                                    {{ $waLog->oldRoom?->room_name ?? '-' }} &rarr; {{ $waLog->newRoom?->room_name ?? '-' }}
+                                </td>
+                                <td><code>{{ $waLog->recipient_phone_masked ?: '-' }}</code></td>
+                                <td>{{ $waLog->template_name ?: '-' }}</td>
+                                <td>{{ $waLog->is_dry_run ? 'Simulasi (Dry-Run)' : 'Live Meta API' }}</td>
+                                <td>
+                                    <span class="{{ $badgeClass }}">{{ $waLog->status_label }}</span>
+                                    @if($waLog->reconciled_at)
+                                        <div><small style="color: #475569;">Direkonsiliasi</small></div>
+                                    @endif
+                                </td>
+                                <td>{{ $waLog->attempts }}/{{ $waLog->max_attempts }}</td>
+                                <td>
+                                    @if($waLog->meta_message_id)
+                                        <code>{{ \Illuminate\Support\Str::limit($waLog->meta_message_id, 28) }}</code>
+                                    @elseif($waLog->error_code)
+                                        <code>{{ $waLog->error_code }}</code>
+                                    @else
+                                        -
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        @endif
+    </div>
+
     <div class="form-actions">
         @if($event->status !== 'Ditolak')
             <a href="{{ route('agenda.edit', $event->id) }}" class="btn btn-edit">Edit Agenda</a>
+        @endif
+
+        @if($event->status === 'Disetujui')
             <a href="{{ route('events.move.form', $event->id) }}" class="btn btn-edit">Pindah Ruangan</a>
         @endif
 

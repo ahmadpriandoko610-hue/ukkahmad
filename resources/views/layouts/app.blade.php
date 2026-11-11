@@ -246,6 +246,14 @@
 
                 </a>
 
+
+                <a href="{{ route('guru.whatsapp.settings') }}"
+                   class="menu-item {{ request()->routeIs('guru.whatsapp.*') ? 'active' : '' }}">
+
+                    Notifikasi WhatsApp
+
+                </a>
+
             @endif
 
 

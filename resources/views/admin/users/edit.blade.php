@@ -66,6 +66,26 @@
         @enderror
     </div>
 
+    @if($user->role === 'guru')
+        <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; font-size: 13.5px; color: #334155;">
+            <strong>Status Persetujuan Notifikasi WhatsApp Guru (Read-Only):</strong><br>
+            <span>Nomor Tersamar: <code>{{ $user->masked_phone ?? '-' }}</code></span><br>
+            <span>Status:
+                @if($user->hasWhatsAppConsent())
+                    <strong style="color: #15803d;">Sudah Menyetujui</strong>
+                    @if($user->whatsapp_opt_in_at)
+                        (sejak {{ $user->whatsapp_opt_in_at->timezone('Asia/Jakarta')->format('d-m-Y H:i') }} WIB)
+                    @endif
+                @else
+                    <strong style="color: #b45309;">Belum Menyetujui</strong>
+                @endif
+            </span><br>
+            <small style="color: #64748b;">
+                Persetujuan hanya dapat diberikan atau dicabut secara mandiri oleh Guru melalui halaman Pengaturan Notifikasi WhatsApp. Jika Admin mengubah nomor WhatsApp Guru, persetujuan lama otomatis dicabut.
+            </small>
+        </div>
+    @endif
+
     <div class="form-group">
         <label for="password">Password Baru</label>
         <div class="password-wrapper">

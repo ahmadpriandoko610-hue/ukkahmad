@@ -103,7 +103,15 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
 
             Http::preventStrayRequests();
             Http::fake([
-                'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
+                'https://graph.facebook.com/v21.0/998877665544/messages' => Http::response([
+                    'messaging_product' => 'whatsapp',
+                    'contacts' => [
+                        ['input' => '6281234567890', 'wa_id' => '6281234567890'],
+                    ],
+                    'messages' => [
+                        ['id' => 'wamid.HBgMpolicy001'],
+                    ],
+                ], 200),
             ]);
 
             $event = Event::create([
@@ -136,26 +144,38 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
             ]);
 
             $response->assertRedirect(route('agenda.index'));
-            $response->assertSessionHas('success', 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.');
+            $response->assertSessionHas(
+                'success',
+                'Ruangan agenda berhasil dipindahkan, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).'
+            );
+            $response->assertSessionMissing('warning');
 
-            // Hanya 1 request ke Guru pemilik agenda
+            // Hanya 1 request ke Meta Cloud API untuk Guru pemilik agenda
             Http::assertSentCount(1);
             Http::assertSent(function ($request) {
                 $data = $request->data();
-                $message = (string) ($data['message'] ?? '');
+                $params = array_column((array) data_get($data, 'template.components.0.parameters', []), 'text');
 
-                return ($data['phone'] ?? '') === '6281234567890'
-                    && str_contains($message, 'Workshop Desain UI')
-                    && str_contains($message, '12 November 2026')
-                    && str_contains($message, '09:00 - 11:15 WIB')
-                    && str_contains($message, 'Ruang Teori A')
-                    && str_contains($message, 'Lab Multimedia')
-                    && str_contains($message, 'Membutuhkan perangkat komputer');
+                return $request->url() === 'https://graph.facebook.com/v21.0/998877665544/messages'
+                    && $request->hasHeader('Authorization', 'Bearer secret-meta-test-token')
+                    && ($data['messaging_product'] ?? '') === 'whatsapp'
+                    && ($data['to'] ?? '') === '6281234567890'
+                    && ($data['type'] ?? '') === 'template'
+                    && data_get($data, 'template.name') === 'notifikasi_pemindahan_ruangan'
+                    && data_get($data, 'template.language.code') === 'id'
+                    && $params === [
+                        'Workshop Desain UI',
+                        '12 November 2026',
+                        '09:00 - 11:15 WIB',
+                        'Ruang Teori A',
+                        'Lab Multimedia',
+                        'Membutuhkan perangkat komputer',
+                    ];
             });
 
             // Admin, PIC ruangan lama, PIC ruangan baru, dan Guru lain tidak menerima WhatsApp
             Http::assertNotSent(function ($request) {
-                return in_array($request->data()['phone'] ?? '', [
+                return in_array($request->data()['to'] ?? '', [
                     '6289999999999', // Admin (simulasi DB)
                     '6281111111111', // PIC lama
                     '6282222222222', // PIC baru
@@ -187,7 +207,12 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
 
             Http::preventStrayRequests();
             Http::fake([
-                'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
+                'https://graph.facebook.com/v21.0/998877665544/messages' => Http::response([
+                    'messaging_product' => 'whatsapp',
+                    'messages' => [
+                        ['id' => 'wamid.HBgMpolicy002'],
+                    ],
+                ], 200),
             ]);
 
             $event = Event::create([
@@ -213,18 +238,24 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
             ]);
 
             $response->assertRedirect(route('agenda.index'));
-            $response->assertSessionHas('success', 'Agenda berhasil diperbarui dan notifikasi WhatsApp perubahan ruangan telah dikirim.');
+            $response->assertSessionHas(
+                'success',
+                'Agenda berhasil diperbarui, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).'
+            );
+            $response->assertSessionMissing('warning');
 
             Http::assertSentCount(1);
             Http::assertSent(function ($request) {
                 $data = $request->data();
-                $message = (string) ($data['message'] ?? '');
+                $params = array_column((array) data_get($data, 'template.components.0.parameters', []), 'text');
 
-                return ($data['phone'] ?? '') === '6281234567890'
-                    && str_contains($message, '14 November 2026 s/d 15 November 2026')
-                    && str_contains($message, '08:15 - 10:30 WIB')
-                    && str_contains($message, 'Ruang Teori A')
-                    && str_contains($message, 'Lab Multimedia');
+                return ($data['to'] ?? '') === '6281234567890'
+                    && $params[0] === 'Pembinaan LKS Web'
+                    && $params[1] === '14 November 2026 s/d 15 November 2026'
+                    && $params[2] === '08:15 - 10:30 WIB'
+                    && $params[3] === 'Ruang Teori A'
+                    && $params[4] === 'Lab Multimedia'
+                    && $params[5] !== '';
             });
 
             $this->assertDatabaseHas('schedule_notifications', [
@@ -489,7 +520,12 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
 
         Http::preventStrayRequests();
         Http::fake([
-            'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
+            'https://graph.facebook.com/v21.0/998877665544/messages' => Http::response([
+                'messaging_product' => 'whatsapp',
+                'messages' => [
+                    ['id' => 'wamid.HBgMpolicylog1'],
+                ],
+            ], 200),
         ]);
 
         $loggedContexts = [];
@@ -520,10 +556,11 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
             'Pengujian log aman'
         );
 
-        $this->assertSame('sent', $result['status']);
+        $this->assertSame('accepted', $result['status']);
         $this->assertCount(1, $loggedContexts);
         $this->assertSame('6281******890', $loggedContexts[0]['recipient_phone'] ?? null);
         $this->assertStringNotContainsString('6281234567890', json_encode($loggedContexts));
+        $this->assertStringNotContainsString('secret-meta-test-token', json_encode($loggedContexts));
     }
 
     /**
@@ -548,12 +585,20 @@ class RoomMoveWhatsAppPolicyTest extends TestCase
 
     private function configureFakeWhatsAppGateway(): void
     {
+        $this->guruOwner->grantWhatsAppConsent('guru_self_service')->save();
+
         config([
             'services.whatsapp.enabled' => true,
-            'services.whatsapp.endpoint' => 'https://wa-gateway.test/send',
-            'services.whatsapp.token' => 'secret-wa-token',
-            'services.whatsapp.auth_header' => 'Authorization',
-            'services.whatsapp.token_prefix' => 'Bearer',
+            'services.whatsapp.driver' => 'meta_cloud_api',
+            'services.whatsapp.dry_run' => false,
+            'services.whatsapp.require_consent' => true,
+            'services.whatsapp.test_allowlist_only' => false,
+            'services.whatsapp.graph_base_url' => 'https://graph.facebook.com',
+            'services.whatsapp.graph_version' => 'v21.0',
+            'services.whatsapp.phone_number_id' => '998877665544',
+            'services.whatsapp.access_token' => 'secret-meta-test-token',
+            'services.whatsapp.template_name' => 'notifikasi_pemindahan_ruangan',
+            'services.whatsapp.template_language' => 'id',
         ]);
     }
 

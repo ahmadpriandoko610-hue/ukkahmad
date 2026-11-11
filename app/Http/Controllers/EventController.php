@@ -316,6 +316,8 @@ class EventController extends Controller
             'user',
             'room',
             'approver',
+            'whatsappNotificationLogs.oldRoom',
+            'whatsappNotificationLogs.newRoom',
         ]);
 
         return view(
@@ -365,6 +367,8 @@ class EventController extends Controller
             'sesi_mulai' => 'required|integer|between:1,14',
             'sesi_selesai' => 'required|integer|between:1,14|gte:sesi_mulai',
             'ruangan_id' => 'required|exists:rooms,id',
+            'current_room_id' => 'nullable|integer|exists:rooms,id',
+            'move_reason' => 'nullable|string|max:1000',
             'keterangan' => 'nullable|string',
         ], [
             'judul.required' => 'Judul agenda wajib diisi.',
@@ -380,62 +384,25 @@ class EventController extends Controller
             'sesi_selesai.gte' => 'Sesi selesai harus sama dengan atau setelah sesi mulai.',
             'ruangan_id.required' => 'Ruangan wajib dipilih.',
             'ruangan_id.exists' => 'Ruangan yang dipilih tidak ditemukan.',
+            'current_room_id.exists' => 'Ruangan awal agenda tidak valid.',
         ]);
 
         $startTime = $this->sessionTime((int) $request->sesi_mulai);
         $endTime = $this->sessionTime((int) $request->sesi_selesai + 1);
         $endDate = $request->tanggal_selesai ?: $request->tanggal;
+        $targetRoomId = (int) $request->ruangan_id;
+        $submittedCurrentRoomId = $request->filled('current_room_id')
+            ? (int) $request->input('current_room_id')
+            : null;
+        $requestedMoveReason = trim((string) $request->input('move_reason', ''));
 
-        /**
-         * =====================================================
-         * CEK RUANGAN AKTIF
-         * =====================================================
-         */
-        $room = Room::whereKey($request->ruangan_id)
-            ->where('is_active', true)
-            ->first();
-
-        if (!$room) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'ruangan_id' =>
-                        'Ruangan yang dipilih tidak aktif.',
-                ]);
-        }
-
-        /**
-         * =====================================================
-         * CEK BENTROK
-         * Event yang sedang diedit dikecualikan.
-         * =====================================================
-         */
-        if (
-            $this->hasScheduleConflict(
-                (int) $request->ruangan_id,
-                $request->tanggal,
-                $startTime,
-                $endTime,
-                $event->id,
-                $endDate
-            )
-        ) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'ruangan_id' =>
-                        'Ruangan sudah terpakai pada waktu tersebut.',
-                ]);
-        }
-
-        /**
-         * =====================================================
-         * UPDATE
-         * =====================================================
-         */
-        $oldRoomId = (int) $event->room_id;
-        $oldRoom = Room::with('pic')->find($oldRoomId);
-        $roomChanged = $oldRoomId !== (int) $room->id;
+        $outcome = [
+            'updated' => false,
+            'room_changed' => false,
+            'error_field' => 'ruangan_id',
+            'error_message' => null,
+            'redirect_error' => null,
+        ];
         $waResult = null;
 
         DB::transaction(function () use (
@@ -444,52 +411,132 @@ class EventController extends Controller
             $endDate,
             $startTime,
             $endTime,
-            $room,
-            $oldRoom,
-            $roomChanged,
+            $targetRoomId,
+            $submittedCurrentRoomId,
+            $requestedMoveReason,
+            &$outcome,
             &$waResult
         ): void {
-            $event->update([
+            /** @var Event|null $lockedEvent */
+            $lockedEvent = Event::query()->whereKey($event->id)->lockForUpdate()->first();
+
+            if (!$lockedEvent) {
+                $outcome['redirect_error'] = 'Agenda tidak ditemukan.';
+
+                return;
+            }
+
+            if ($lockedEvent->status === 'Ditolak') {
+                $outcome['redirect_error'] = 'Agenda yang ditolak tidak dapat diedit.';
+
+                return;
+            }
+
+            $currentRoomId = (int) $lockedEvent->room_id;
+            $roomChanged = $currentRoomId !== $targetRoomId;
+
+            if ($submittedCurrentRoomId !== null && $submittedCurrentRoomId !== $currentRoomId) {
+                $outcome['error_message'] = 'Kondisi ruangan agenda sudah berubah karena proses lain. Muat ulang halaman sebelum menyimpan perubahan.';
+
+                return;
+            }
+
+            if ($roomChanged && $lockedEvent->status !== 'Disetujui') {
+                $outcome['error_message'] = 'Hanya agenda yang sudah disetujui yang dapat dipindahkan ruangannya.';
+
+                return;
+            }
+
+            $room = Room::query()->whereKey($targetRoomId)->lockForUpdate()->first();
+            if (!$room || !$room->is_active) {
+                $outcome['error_message'] = 'Ruangan yang dipilih tidak aktif.';
+
+                return;
+            }
+
+            if (
+                $this->hasScheduleConflict(
+                    (int) $room->id,
+                    $request->tanggal,
+                    $startTime,
+                    $endTime,
+                    $lockedEvent->id,
+                    $endDate
+                )
+            ) {
+                $outcome['error_message'] = 'Ruangan sudah terpakai pada waktu tersebut.';
+
+                return;
+            }
+
+            $updatePayload = [
                 'event_name' => $request->judul,
                 'date' => $request->tanggal,
                 'end_date' => $endDate,
                 'start_time' => $startTime,
                 'end_time' => $endTime,
-                'room_id' => $request->ruangan_id,
+                'room_id' => $room->id,
                 'description' => $request->keterangan,
-            ]);
+            ];
 
             if (!$roomChanged) {
+                $lockedEvent->update($updatePayload);
+                $outcome['updated'] = true;
+
                 return;
             }
 
+            $oldRoom = Room::with('pic')->find($currentRoomId);
+            $resolvedMoveReason = $requestedMoveReason !== ''
+                ? $requestedMoveReason
+                : 'Penyesuaian jadwal dan penggunaan ruangan oleh Admin.';
+            $nextVersion = ((int) ($lockedEvent->room_move_version ?? 0)) + 1;
+            $transitionId = (string) Str::uuid();
+
+            $updatePayload['move_reason'] = $resolvedMoveReason;
+            $updatePayload['room_move_version'] = $nextVersion;
+            $updatePayload['last_room_move_transition_id'] = $transitionId;
+
+            $lockedEvent->update($updatePayload);
+
             ScheduleNotification::create([
-                'user_id' => $event->requester_id,
-                'event_id' => $event->id,
+                'user_id' => $lockedEvent->requester_id,
+                'event_id' => $lockedEvent->id,
                 'title' => 'Ruangan agenda dipindahkan',
                 'message' =>
-                    'Agenda "' . $event->event_name . '" tanggal ' .
-                    $event->formatted_date_range .
+                    'Agenda "' . $lockedEvent->event_name . '" tanggal ' .
+                    $lockedEvent->formatted_date_range .
                     ' dipindahkan dari ' .
                     ($oldRoom?->room_name ?? 'ruangan sebelumnya') .
                     ' ke ' .
-                    $room->room_name . '.',
+                    $room->room_name .
+                    '. Alasan: ' .
+                    $resolvedMoveReason,
             ]);
 
-            $eventId = $event->id;
-            DB::afterCommit(function () use ($eventId, $oldRoom, $room, &$waResult): void {
+            $outcome['updated'] = true;
+            $outcome['room_changed'] = true;
+
+            $eventId = $lockedEvent->id;
+            $newRoomId = (int) $room->id;
+            DB::afterCommit(function () use ($eventId, $oldRoom, $newRoomId, $resolvedMoveReason, $transitionId, &$waResult): void {
                 try {
                     $freshEvent = Event::with('requester')->find($eventId);
-                    if ($freshEvent) {
+                    $freshNewRoom = Room::with('pic')->find($newRoomId);
+                    if ($freshEvent && $freshNewRoom) {
                         $waResult = $this->whatsAppService->notifyRoomChanged(
                             $freshEvent,
                             $oldRoom,
-                            $room->loadMissing('pic')
+                            $freshNewRoom,
+                            $resolvedMoveReason,
+                            null,
+                            $transitionId
                         );
                     }
                 } catch (\Throwable $exception) {
                     Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pembaruan agenda selesai.', [
                         'event_id' => $eventId,
+                        'transition_id' => $transitionId,
                         'error' => $exception->getMessage(),
                     ]);
 
@@ -504,23 +551,30 @@ class EventController extends Controller
             });
         });
 
-        $flashSuccess = 'Agenda berhasil diperbarui.';
-        $flashWarning = null;
-
-        if ($roomChanged && $waResult !== null) {
-            if ($waResult['status'] === 'sent') {
-                $flashSuccess = 'Agenda berhasil diperbarui dan notifikasi WhatsApp perubahan ruangan telah dikirim.';
-            } elseif (!in_array($waResult['status'], ['skipped_unchanged', 'skipped_non_guru'], true)) {
-                $flashWarning = 'Perubahan agenda tersimpan. ' . $waResult['message'];
-            }
+        if ($outcome['redirect_error'] !== null) {
+            return redirect()->route('agenda.index')->with('error', $outcome['redirect_error']);
         }
+
+        if (!$outcome['updated']) {
+            return back()
+                ->withInput()
+                ->withErrors([
+                    $outcome['error_field'] => $outcome['error_message'] ?? 'Agenda gagal diperbarui.',
+                ]);
+        }
+
+        $roomChanged = $outcome['room_changed'];
+        $baseSuccess = $roomChanged
+            ? 'Agenda berhasil diperbarui dan notifikasi internal telah dibuat.'
+            : 'Agenda berhasil diperbarui.';
+        $feedback = $this->resolveWhatsAppFlashFeedback($baseSuccess, $roomChanged ? $waResult : null, 'update');
 
         $redirect = redirect()
             ->route('agenda.index')
-            ->with('success', $flashSuccess);
+            ->with('success', $feedback['success']);
 
-        if ($flashWarning !== null) {
-            $redirect->with('warning', $flashWarning);
+        if ($feedback['warning'] !== null) {
+            $redirect->with('warning', $feedback['warning']);
         }
 
         return $redirect;
@@ -1136,8 +1190,8 @@ public function picCalendar()
      */
     public function moveForm(Event $event)
     {
-        if ($event->status === 'Ditolak') {
-            return redirect()->route('agenda.index')->with('error', 'Ruangan agenda yang ditolak tidak dapat dipindahkan.');
+        if ($event->status !== 'Disetujui') {
+            return redirect()->route('agenda.index')->with('error', 'Hanya agenda yang sudah disetujui yang dapat dipindahkan.');
         }
 
         $rooms = Room::sortRooms(
@@ -1164,13 +1218,18 @@ public function picCalendar()
         Request $request,
         Event $event
     ) {
-        if ($event->status === 'Ditolak') {
-            return redirect()->route('agenda.index')->with('error', 'Ruangan agenda yang ditolak tidak dapat dipindahkan.');
+        if ($event->status !== 'Disetujui') {
+            return redirect()->route('agenda.index')->with('error', 'Hanya agenda yang sudah disetujui yang dapat dipindahkan.');
         }
 
         $request->validate([
             'room_id' => [
                 'required',
+                'exists:rooms,id',
+            ],
+            'current_room_id' => [
+                'nullable',
+                'integer',
                 'exists:rooms,id',
             ],
             'move_reason' => [
@@ -1183,105 +1242,110 @@ public function picCalendar()
                 'Ruangan tujuan wajib dipilih.',
             'room_id.exists' =>
                 'Ruangan tujuan tidak ditemukan.',
+            'current_room_id.exists' =>
+                'Ruangan awal agenda tidak valid.',
             'move_reason.required' =>
                 'Alasan pemindahan wajib diisi.',
         ]);
 
-        /**
-         * =====================================================
-         * CEK RUANGAN SAMA
-         * =====================================================
-         */
-        if ((int) $request->room_id === (int) $event->room_id) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'room_id' =>
-                        'Ruangan tujuan harus berbeda dari ruangan saat ini.',
-                ]);
-        }
+        $targetRoomId = (int) $request->room_id;
+        $submittedCurrentRoomId = $request->filled('current_room_id')
+            ? (int) $request->input('current_room_id')
+            : null;
+        $moveReason = (string) $request->move_reason;
 
-        /**
-         * =====================================================
-         * CEK RUANGAN AKTIF
-         * =====================================================
-         */
-        $room = Room::whereKey(
-                $request->room_id
-            )
-            ->where(
-                'is_active',
-                true
-            )
-            ->first();
-
-        if (!$room) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'room_id' =>
-                        'Ruangan tujuan tidak tersedia.',
-                ]);
-        }
-
-        /**
-         * =====================================================
-         * CEK BENTROK RUANGAN TUJUAN
-         * =====================================================
-         */
-        if (
-            $this->hasScheduleConflict(
-                (int) $room->id,
-                $event->date,
-                $event->start_time,
-                $event->end_time,
-                $event->id,
-                $event->end_date ?? $event->date
-            )
-        ) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'room_id' =>
-                        'Ruangan tujuan sudah terpakai pada waktu agenda ini.',
-                ]);
-        }
-
-        /**
-         * Simpan data ruangan lama
-         * sebelum update.
-         */
-        $oldRoomId = (int) $event->room_id;
-        $oldRoom = Room::with('pic')->find($oldRoomId);
-        $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
-        $moveReason = $request->move_reason;
+        $outcome = [
+            'moved' => false,
+            'error_field' => 'room_id',
+            'error_message' => null,
+            'redirect_error' => null,
+        ];
         $waResult = null;
 
         /**
          * =====================================================
-         * UPDATE RUANGAN & NOTIFIKASI SECARA ATOMIK
+         * KUNCI BARIS AGENDA & PINDAHKAN RUANGAN SECARA ATOMIK
          * =====================================================
          */
         DB::transaction(function () use (
             $event,
-            $room,
-            $oldRoom,
-            $oldRoomName,
+            $targetRoomId,
+            $submittedCurrentRoomId,
             $moveReason,
+            &$outcome,
             &$waResult
         ): void {
-            $event->update([
+            /** @var Event|null $lockedEvent */
+            $lockedEvent = Event::query()->whereKey($event->id)->lockForUpdate()->first();
+
+            if (!$lockedEvent) {
+                $outcome['redirect_error'] = 'Agenda tidak ditemukan.';
+
+                return;
+            }
+
+            if ($lockedEvent->status !== 'Disetujui') {
+                $outcome['redirect_error'] = 'Hanya agenda yang sudah disetujui yang dapat dipindahkan.';
+
+                return;
+            }
+
+            $currentRoomId = (int) $lockedEvent->room_id;
+
+            // Validasi current_room_id jika dikirim form sebagai pemeriksaan stale state.
+            if ($submittedCurrentRoomId !== null && $submittedCurrentRoomId !== $currentRoomId) {
+                $outcome['error_message'] = 'Kondisi ruangan agenda telah berubah karena permintaan lain. Muat ulang halaman sebelum memindahkan ruangan.';
+
+                return;
+            }
+
+            if ($targetRoomId === $currentRoomId) {
+                $outcome['error_message'] = 'Ruangan tujuan harus berbeda dari ruangan saat ini.';
+
+                return;
+            }
+
+            $room = Room::query()->whereKey($targetRoomId)->lockForUpdate()->first();
+            if (!$room || !$room->is_active) {
+                $outcome['error_message'] = 'Ruangan tujuan tidak tersedia.';
+
+                return;
+            }
+
+            if (
+                $this->hasScheduleConflict(
+                    (int) $room->id,
+                    $lockedEvent->date,
+                    $lockedEvent->start_time,
+                    $lockedEvent->end_time,
+                    $lockedEvent->id,
+                    $lockedEvent->end_date ?? $lockedEvent->date
+                )
+            ) {
+                $outcome['error_message'] = 'Ruangan tujuan sudah terpakai pada waktu agenda ini.';
+
+                return;
+            }
+
+            $oldRoom = Room::with('pic')->find($currentRoomId);
+            $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
+            $nextVersion = ((int) ($lockedEvent->room_move_version ?? 0)) + 1;
+            $transitionId = (string) Str::uuid();
+
+            $lockedEvent->update([
                 'room_id' => $room->id,
                 'move_reason' => $moveReason,
+                'room_move_version' => $nextVersion,
+                'last_room_move_transition_id' => $transitionId,
             ]);
 
             ScheduleNotification::create([
-                'user_id' => $event->requester_id,
-                'event_id' => $event->id,
+                'user_id' => $lockedEvent->requester_id,
+                'event_id' => $lockedEvent->id,
                 'title' => 'Ruangan agenda dipindahkan',
                 'message' =>
-                    'Agenda "' . $event->event_name . '" tanggal ' .
-                    $event->formatted_date_range .
+                    'Agenda "' . $lockedEvent->event_name . '" tanggal ' .
+                    $lockedEvent->formatted_date_range .
                     ' dipindahkan dari ' .
                     $oldRoomName .
                     ' ke ' .
@@ -1290,21 +1354,28 @@ public function picCalendar()
                     $moveReason,
             ]);
 
-            $eventId = $event->id;
-            DB::afterCommit(function () use ($eventId, $oldRoom, $room, $moveReason, &$waResult): void {
+            $outcome['moved'] = true;
+
+            $eventId = $lockedEvent->id;
+            $newRoomId = (int) $room->id;
+            DB::afterCommit(function () use ($eventId, $oldRoom, $newRoomId, $moveReason, $transitionId, &$waResult): void {
                 try {
                     $freshEvent = Event::with('requester')->find($eventId);
-                    if ($freshEvent) {
+                    $freshNewRoom = Room::with('pic')->find($newRoomId);
+                    if ($freshEvent && $freshNewRoom) {
                         $waResult = $this->whatsAppService->notifyRoomChanged(
                             $freshEvent,
                             $oldRoom,
-                            $room->loadMissing('pic'),
-                            $moveReason
+                            $freshNewRoom,
+                            $moveReason,
+                            null,
+                            $transitionId
                         );
                     }
                 } catch (\Throwable $exception) {
                     Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pemindahan ruangan selesai.', [
                         'event_id' => $eventId,
+                        'transition_id' => $transitionId,
                         'error' => $exception->getMessage(),
                     ]);
 
@@ -1319,22 +1390,85 @@ public function picCalendar()
             });
         });
 
-        $flashSuccess = ($waResult['status'] ?? null) === 'sent'
-            ? 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.'
-            : 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.';
+        if ($outcome['redirect_error'] !== null) {
+            return redirect()
+                ->route('agenda.index')
+                ->with('error', $outcome['redirect_error']);
+        }
+
+        if (!$outcome['moved']) {
+            return back()
+                ->withInput()
+                ->withErrors([
+                    $outcome['error_field'] => $outcome['error_message'] ?? 'Pemindahan ruangan gagal diproses.',
+                ]);
+        }
+
+        $baseSuccess = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal telah dibuat.';
+        $feedback = $this->resolveWhatsAppFlashFeedback($baseSuccess, $waResult, 'move');
 
         $redirect = redirect()
             ->route('agenda.index')
-            ->with('success', $flashSuccess);
+            ->with('success', $feedback['success']);
 
-        if (
-            $waResult !== null &&
-            !in_array($waResult['status'], ['sent', 'skipped_unchanged', 'skipped_non_guru'], true)
-        ) {
-            $redirect->with('warning', 'Perubahan ruangan tersimpan. ' . $waResult['message']);
+        if ($feedback['warning'] !== null) {
+            $redirect->with('warning', $feedback['warning']);
         }
 
         return $redirect;
+    }
+
+    /**
+     * Menyusun pesan flash Admin yang jujur sesuai status Meta Cloud API tanpa membocorkan kredensial atau nomor penuh.
+     *
+     * @param array<string, mixed>|null $waResult
+     * @return array{success: string, warning: ?string}
+     */
+    private function resolveWhatsAppFlashFeedback(string $baseSuccess, ?array $waResult, string $action): array
+    {
+        if ($waResult === null) {
+            return [
+                'success' => $baseSuccess,
+                'warning' => null,
+            ];
+        }
+
+        $status = (string) ($waResult['status'] ?? '');
+
+        if ($status === 'accepted') {
+            $successMessage = $action === 'move'
+                ? 'Ruangan agenda berhasil dipindahkan, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).'
+                : 'Agenda berhasil diperbarui, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).';
+
+            return [
+                'success' => $successMessage,
+                'warning' => null,
+            ];
+        }
+
+        if (in_array($status, ['skipped_unchanged', 'skipped_non_guru', 'skipped_duplicate'], true)) {
+            return [
+                'success' => $baseSuccess,
+                'warning' => null,
+            ];
+        }
+
+        $warningMessage = match ($status) {
+            'dry_run' => 'Perubahan agenda tersimpan. Simulasi dry-run berhasil dicatat; pesan tidak dikirim ke WhatsApp.',
+            'skipped_no_consent' => 'Perubahan agenda tersimpan. Notifikasi WhatsApp tidak dikirim karena Guru pemilik agenda belum menyetujui notifikasi WhatsApp (skipped_no_consent).',
+            'skipped_not_allowlisted' => 'Perubahan agenda tersimpan. Notifikasi WhatsApp tidak dikirim karena nomor Guru belum masuk allowlist uji (skipped_not_allowlisted).',
+            'unconfigured' => 'Perubahan agenda tersimpan. Notifikasi WhatsApp tidak dikirim karena konfigurasi Meta Cloud API belum lengkap atau belum aktif (unconfigured).',
+            'ambiguous_timeout' => 'Perubahan ruangan agenda tetap tersimpan, namun koneksi Meta Cloud API mengalami timeout (ambiguous_timeout). Jangan kirim ulang otomatis; lakukan pemeriksaan/rekonsiliasi.',
+            'connection_failed' => 'Perubahan ruangan agenda tetap tersimpan, namun koneksi ke Meta Cloud API gagal sebelum request terkirim (connection_failed).',
+            'pending' => 'Perubahan ruangan agenda tetap tersimpan, namun pembaruan status log WhatsApp ke database gagal (status: pending). Klaim dipertahankan untuk mencegah pengiriman ganda dan memerlukan rekonsiliasi.',
+            'failed' => 'Perubahan ruangan agenda tetap tersimpan, namun gagal menghubungi Meta Cloud API (failed).',
+            default => 'Perubahan agenda tersimpan. ' . (string) ($waResult['message'] ?? ''),
+        };
+
+        return [
+            'success' => $baseSuccess,
+            'warning' => $warningMessage,
+        ];
     }
 
     /**
@@ -1456,7 +1590,7 @@ public function publicCalendar()
         $startDate = Carbon::parse($date)->toDateString();
         $finalEndDate = $endDate ? Carbon::parse($endDate)->toDateString() : $startDate;
 
-        return Event::query()
+        $query = Event::query()
             ->where(
                 'room_id',
                 $roomId
@@ -1489,8 +1623,13 @@ public function publicCalendar()
                 'end_time',
                 '>',
                 $startTime
-            )
-            ->exists();
+            );
+
+        if (DB::transactionLevel() > 0 && DB::getDriverName() !== 'sqlite') {
+            $query->lockForUpdate();
+        }
+
+        return $query->exists();
     }
 
     /**

@@ -22,6 +22,28 @@
     Ruangan saat ini: {{ $event->room->room_name }}
 </p>
 
+@php
+    $requester = $event->requester;
+    $isGuruRequester = $requester && $requester->role === 'guru';
+@endphp
+
+<div class="{{ ($isGuruRequester && $requester->hasWhatsAppConsent()) ? 'alert-success' : 'alert-warning' }}" style="margin-bottom: 16px;">
+    <strong>Status Notifikasi WhatsApp Pemilik Agenda:</strong><br>
+    @if(!$isGuruRequester)
+        Pemilik agenda bukan role Guru / Organisasi. Hanya notifikasi internal dashboard yang akan dibuat.
+    @elseif(!$requester->masked_phone)
+        Guru pemilik agenda belum memiliki nomor WhatsApp valid. Hanya notifikasi internal dashboard yang akan dibuat.
+    @elseif(!$requester->hasWhatsAppConsent())
+        Guru pemilik agenda belum menyetujui (opt-in) notifikasi WhatsApp. Pesan WhatsApp tidak akan dikirim, namun notifikasi internal dashboard tetap dibuat.
+    @elseif(!config('services.whatsapp.enabled'))
+        Guru sudah menyetujui notifikasi (<code>{{ $requester->masked_phone }}</code>), namun integrasi Meta Cloud API server sedang nonaktif.
+    @elseif(config('services.whatsapp.dry_run', true))
+        Guru sudah menyetujui notifikasi (<code>{{ $requester->masked_phone }}</code>). Mode simulasi (dry-run) aktif: hanya akan dicatat di log audit tanpa mengirim ke WhatsApp.
+    @else
+        Guru sudah menyetujui notifikasi (<code>{{ $requester->masked_phone }}</code>) dan siap dikirim melalui Meta Cloud API sesuai kebijakan allowlist.
+    @endif
+</div>
+
 @if ($errors->any())
     <div class="alert alert-danger">
         @foreach ($errors->all() as $error)

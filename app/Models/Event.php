@@ -25,6 +25,8 @@ class Event extends Model
         'status',
         'approved_by',
         'move_reason',
+        'room_move_version',
+        'last_room_move_transition_id',
         'rejection_reason',
         'rejected_at',
         'description',
@@ -33,6 +35,7 @@ class Event extends Model
     protected $casts = [
         'date' => 'date',
         'end_date' => 'date',
+        'room_move_version' => 'integer',
         'rejected_at' => 'datetime',
     ];
 
@@ -185,6 +188,17 @@ class Event extends Model
             ScheduleNotification::class,
             'event_id'
         );
+    }
+
+    /**
+     * Log audit notifikasi WhatsApp pemindahan ruangan.
+     */
+    public function whatsappNotificationLogs()
+    {
+        return $this->hasMany(
+            WhatsAppNotificationLog::class,
+            'event_id'
+        )->orderByDesc('id');
     }
 
     /**

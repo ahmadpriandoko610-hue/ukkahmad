@@ -65,6 +65,7 @@
             style="{{ $canHaveWhatsApp ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
         >
         <small id="phoneHelp">{{ $canHaveWhatsApp ? 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 62..., atau +62...).' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.' }}</small>
+        <small style="display: block; color: #64748b; margin-top: 4px;">Khusus role Guru / Organisasi, persetujuan penerimaan notifikasi pemindahan ruangan diberikan secara mandiri oleh Guru setelah login.</small>
         @error('phone')
             <small class="form-error">{{ $message }}</small>
         @enderror

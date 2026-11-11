@@ -576,85 +576,154 @@ class EventController extends Controller
 
         $request->validate([
             'ruangan_id' => 'required|exists:rooms,id',
+            'current_room_id' => 'nullable|integer|exists:rooms,id',
             'alasan' => 'required|string|max:500',
         ]);
 
-        if ((int) $request->ruangan_id === (int) $event->room_id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan tujuan harus berbeda dari ruangan saat ini.'
-            ], 422);
-        }
+        $targetRoomId = (int) $request->ruangan_id;
+        $submittedCurrentRoomId = $request->filled('current_room_id')
+            ? (int) $request->input('current_room_id')
+            : null;
+        $reason = (string) $request->alasan;
 
-        $room = Room::whereKey($request->ruangan_id)
-            ->where('is_active', true)
-            ->first();
-
-        if (!$room) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan tujuan tidak aktif.'
-            ], 422);
-        }
-
-        $conflict = Event::query()
-            ->where('room_id', $request->ruangan_id)
-            ->whereDate('date', $event->date)
-            ->where('status', '!=', 'Ditolak')
-            ->where('start_time', '<', $event->end_time)
-            ->where('end_time', '>', $event->start_time)
-            ->where('id', '!=', $event->id)
-            ->exists();
-
-        if ($conflict) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan tujuan sudah terpakai pada waktu tersebut.'
-            ], 422);
-        }
-
-        $oldRoomId = (int) $event->room_id;
-        $oldRoom = Room::with('pic')->find($oldRoomId);
-        $roomChanged = $oldRoomId !== (int) $room->id;
-        $reason = $request->alasan;
+        $errorResponse = null;
+        $movedEvent = null;
         $waResult = null;
 
-        DB::transaction(function () use ($event, $request, $room, $oldRoom, $roomChanged, $reason, &$waResult): void {
-            $event->update([
-                'room_id' => $request->ruangan_id,
-                'move_reason' => $reason,
-            ]);
+        DB::transaction(function () use (
+            $id,
+            $targetRoomId,
+            $submittedCurrentRoomId,
+            $reason,
+            &$errorResponse,
+            &$movedEvent,
+            &$waResult
+        ): void {
+            /** @var Event|null $lockedEvent */
+            $lockedEvent = Event::query()->whereKey($id)->lockForUpdate()->first();
 
-            ScheduleNotification::create([
-                'user_id' => $event->requester_id,
-                'event_id' => $event->id,
-                'title' => 'Ruangan agenda dipindahkan',
-                'message' =>
-                    'Agenda "' . $event->event_name .
-                    '" dipindahkan ke ruangan "' . $room->room_name .
-                    '". Alasan: ' . $reason,
-                'read_at' => null,
-            ]);
+            if (!$lockedEvent) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Agenda tidak ditemukan'
+                ], 404);
 
-            if (!$roomChanged) {
                 return;
             }
 
-            $eventId = $event->id;
-            DB::afterCommit(function () use ($eventId, $oldRoom, $room, $reason, &$waResult): void {
+            if ($lockedEvent->status !== 'Disetujui') {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Hanya agenda yang sudah disetujui yang dapat dipindahkan.'
+                ], 422);
+
+                return;
+            }
+
+            $oldRoomId = (int) $lockedEvent->room_id;
+
+            if ($submittedCurrentRoomId !== null && $submittedCurrentRoomId !== $oldRoomId) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Kondisi ruangan agenda telah berubah karena permintaan lain. Muat ulang data sebelum memindahkan ruangan.'
+                ], 409);
+
+                return;
+            }
+
+            if ($targetRoomId === $oldRoomId) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan tujuan harus berbeda dari ruangan saat ini.'
+                ], 422);
+
+                return;
+            }
+
+            $room = Room::query()->whereKey($targetRoomId)->lockForUpdate()->first();
+            if (!$room || !$room->is_active) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan tujuan tidak aktif.'
+                ], 422);
+
+                return;
+            }
+
+            $eventStartDate = $lockedEvent->getRawOriginal('date')
+                ?: Carbon::parse($lockedEvent->date)->toDateString();
+            $eventEndDate = $lockedEvent->getRawOriginal('end_date')
+                ?: ($lockedEvent->end_date ? Carbon::parse($lockedEvent->end_date)->toDateString() : $eventStartDate);
+
+            $conflictQuery = Event::query()
+                ->where('room_id', $room->id)
+                ->where(function ($query) use ($eventStartDate, $eventEndDate): void {
+                    $query->whereDate('date', '<=', $eventEndDate)
+                        ->whereDate(DB::raw('COALESCE(end_date, date)'), '>=', $eventStartDate);
+                })
+                ->where('status', '!=', 'Ditolak')
+                ->where('start_time', '<', $lockedEvent->end_time)
+                ->where('end_time', '>', $lockedEvent->start_time)
+                ->where('id', '!=', $lockedEvent->id);
+
+            if (DB::connection()->getDriverName() !== 'sqlite') {
+                $conflictQuery->lockForUpdate();
+            }
+
+            if ($conflictQuery->exists()) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan tujuan sudah terpakai pada waktu tersebut.'
+                ], 422);
+
+                return;
+            }
+
+            $oldRoom = Room::with('pic')->find($oldRoomId);
+            $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
+            $nextVersion = ((int) ($lockedEvent->room_move_version ?? 0)) + 1;
+            $transitionId = (string) Str::uuid();
+
+            $lockedEvent->update([
+                'room_id' => $room->id,
+                'move_reason' => $reason,
+                'room_move_version' => $nextVersion,
+                'last_room_move_transition_id' => $transitionId,
+            ]);
+
+            ScheduleNotification::create([
+                'user_id' => $lockedEvent->requester_id,
+                'event_id' => $lockedEvent->id,
+                'title' => 'Ruangan agenda dipindahkan',
+                'message' =>
+                    'Agenda "' . $lockedEvent->event_name .
+                    '" dipindahkan ke ruangan "' . $room->room_name .
+                    '" (sebelumnya ' . $oldRoomName . '). Alasan: ' . $reason,
+                'read_at' => null,
+            ]);
+
+            $movedEvent = $lockedEvent;
+            $eventId = $lockedEvent->id;
+            $newRoomId = (int) $room->id;
+
+            DB::afterCommit(function () use ($eventId, $oldRoom, $newRoomId, $reason, $transitionId, &$waResult): void {
                 try {
                     $freshEvent = Event::with('requester')->find($eventId);
-                    if ($freshEvent) {
+                    $freshNewRoom = Room::with('pic')->find($newRoomId);
+                    if ($freshEvent && $freshNewRoom) {
                         $waResult = app(WhatsAppService::class)->notifyRoomChanged(
                             $freshEvent,
                             $oldRoom,
-                            $room->loadMissing('pic'),
-                            $reason
+                            $freshNewRoom,
+                            $reason,
+                            null,
+                            $transitionId
                         );
                     }
                 } catch (\Throwable $exception) {
                     Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pemindahan ruangan API selesai.', [
                         'event_id' => $eventId,
+                        'transition_id' => $transitionId,
                         'error' => $exception->getMessage(),
                     ]);
 
@@ -663,22 +732,43 @@ class EventController extends Controller
                         'sent_count' => 0,
                         'failed_count' => 1,
                         'recipients_count' => 0,
+                        'transition_id' => $transitionId,
                         'message' => 'Pengiriman notifikasi WhatsApp gagal dijalankan.',
                     ];
                 }
             });
         });
 
-        $event->load(['room', 'requester']);
+        if ($errorResponse !== null) {
+            return $errorResponse;
+        }
+
+        $event = ($movedEvent ?? Event::find($id))?->load(['room', 'requester']);
+
+        $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal telah dibuat.';
+        $waStatus = $waResult['status'] ?? null;
+
+        if ($waStatus === 'accepted') {
+            $apiMessage = 'Ruangan agenda berhasil dipindahkan, notifikasi internal dibuat, dan permintaan WhatsApp diterima antrean Meta Cloud API (accepted).';
+        } elseif ($waStatus === 'dry_run') {
+            $apiMessage = 'Ruangan agenda berhasil dipindahkan, notifikasi internal dibuat, dan simulasi dry-run WhatsApp dicatat tanpa pengiriman.';
+        } elseif ($waStatus === 'ambiguous_timeout') {
+            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun status WhatsApp timeout ambigu (ambiguous_timeout) dan memerlukan rekonsiliasi.';
+        } elseif ($waStatus === 'connection_failed') {
+            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun koneksi ke Meta Cloud API gagal sebelum request terkirim (connection_failed).';
+        } elseif ($waStatus === 'pending') {
+            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun pembaruan status log WhatsApp ke database gagal (pending) dan memerlukan rekonsiliasi.';
+        }
 
         return response()->json([
             'success' => true,
-            'message' => $waResult && $waResult['status'] === 'sent'
-                ? 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.'
-                : 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.',
+            'message' => $apiMessage,
             'data' => $event,
             'whatsapp_notification' => $waResult ? [
                 'status' => $waResult['status'],
+                'is_dry_run' => $waResult['is_dry_run'] ?? null,
+                'meta_message_id' => $waResult['meta_message_id'] ?? null,
+                'transition_id' => $waResult['transition_id'] ?? null,
                 'message' => $waResult['message'],
             ] : null,
         ]);

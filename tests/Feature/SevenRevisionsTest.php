@@ -308,19 +308,30 @@ class SevenRevisionsTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
-            $this->guru->update(['phone' => '083333333333']);
+            $this->guru->grantWhatsAppConsent('guru_self_service', '083333333333')->save();
 
             config([
                 'services.whatsapp.enabled' => true,
-                'services.whatsapp.endpoint' => 'https://wa-gateway.test/send',
-                'services.whatsapp.token' => 'secret-wa-token',
-                'services.whatsapp.auth_header' => 'Authorization',
-                'services.whatsapp.token_prefix' => 'Bearer',
+                'services.whatsapp.driver' => 'meta_cloud_api',
+                'services.whatsapp.dry_run' => false,
+                'services.whatsapp.require_consent' => true,
+                'services.whatsapp.test_allowlist_only' => false,
+                'services.whatsapp.graph_base_url' => 'https://graph.facebook.com',
+                'services.whatsapp.graph_version' => 'v21.0',
+                'services.whatsapp.phone_number_id' => '556677889900',
+                'services.whatsapp.access_token' => 'meta-token-seven-rev',
+                'services.whatsapp.template_name' => 'notifikasi_pemindahan_ruangan',
+                'services.whatsapp.template_language' => 'id',
             ]);
 
             Http::preventStrayRequests();
             Http::fake([
-                'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
+                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
+                    'messaging_product' => 'whatsapp',
+                    'messages' => [
+                        ['id' => 'wamid.HBgMseven001'],
+                    ],
+                ], 200),
             ]);
 
             $event = Event::create([
@@ -342,7 +353,11 @@ class SevenRevisionsTest extends TestCase
             ]);
 
             $moveResponse->assertRedirect(route('agenda.index'));
-            $moveResponse->assertSessionHas('success', 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.');
+            $moveResponse->assertSessionHas(
+                'success',
+                'Ruangan agenda berhasil dipindahkan, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).'
+            );
+            $moveResponse->assertSessionMissing('warning');
 
             $this->assertDatabaseHas('events', [
                 'id' => $event->id,
@@ -353,18 +368,21 @@ class SevenRevisionsTest extends TestCase
             Http::assertSentCount(1);
             Http::assertSent(function ($request) {
                 $data = $request->data();
-                $message = (string) ($data['message'] ?? '');
+                $params = array_column((array) data_get($data, 'template.components.0.parameters', []), 'text');
 
-                return $request->url() === 'https://wa-gateway.test/send'
-                    && ($data['phone'] ?? '') === '6283333333333'
-                    && str_contains($message, 'Rapat OSIS')
-                    && str_contains($message, '12 November 2026')
-                    && str_contains($message, '08:15 - 09:45 WIB')
-                    && str_contains($message, 'Aula Utama')
-                    && str_contains($message, 'LAB 1')
-                    && str_contains($message, 'Aula dipakai upacara dadakan');
+                return $request->url() === 'https://graph.facebook.com/v21.0/556677889900/messages'
+                    && ($data['to'] ?? '') === '6283333333333'
+                    && data_get($data, 'template.name') === 'notifikasi_pemindahan_ruangan'
+                    && $params === [
+                        'Rapat OSIS',
+                        '12 November 2026',
+                        '08:15 - 09:45 WIB',
+                        'Aula Utama',
+                        'LAB 1',
+                        'Aula dipakai upacara dadakan',
+                    ];
             });
-            Http::assertNotSent(fn ($request) => in_array($request->data()['phone'] ?? '', ['6281111111111', '6282222222222'], true));
+            Http::assertNotSent(fn ($request) => in_array($request->data()['to'] ?? '', ['6281111111111', '6282222222222'], true));
 
             // 2. Edit agenda tanpa mengubah ruangan tidak mengirim WA lagi
             Http::fake();
@@ -383,7 +401,12 @@ class SevenRevisionsTest extends TestCase
 
             // 3. Pindah ruangan oleh Admin melalui API memicu WA ke Guru pemilik agenda
             Http::fake([
-                'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
+                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
+                    'messaging_product' => 'whatsapp',
+                    'messages' => [
+                        ['id' => 'wamid.HBgMseven002'],
+                    ],
+                ], 200),
             ]);
 
             $apiMove = $this->actingAsApiUser($this->admin)
@@ -394,15 +417,15 @@ class SevenRevisionsTest extends TestCase
 
             $apiMove->assertOk()
                 ->assertJsonPath('success', true)
-                ->assertJsonPath('whatsapp_notification.status', 'sent');
+                ->assertJsonPath('whatsapp_notification.status', 'accepted');
 
             Http::assertSentCount(1);
-            Http::assertSent(fn ($request) => ($request->data()['phone'] ?? '') === '6283333333333');
+            Http::assertSent(fn ($request) => ($request->data()['to'] ?? '') === '6283333333333');
 
-            // 4. Gateway belum dikonfigurasi memberi warning jujur dan tidak mengklaim terkirim
+            // 4. Meta Cloud API belum dikonfigurasi memberi warning jujur dan tidak mengklaim terkirim
             config([
-                'services.whatsapp.endpoint' => '',
-                'services.whatsapp.token' => '',
+                'services.whatsapp.phone_number_id' => '',
+                'services.whatsapp.access_token' => '',
             ]);
             Http::fake();
 
@@ -424,12 +447,20 @@ class SevenRevisionsTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
-            $this->guru->update(['phone' => '083333333333']);
+            $this->guru->grantWhatsAppConsent('guru_self_service', '083333333333')->save();
 
             config([
                 'services.whatsapp.enabled' => true,
-                'services.whatsapp.endpoint' => 'https://wa-gateway.test/send',
-                'services.whatsapp.token' => 'secret-wa-token',
+                'services.whatsapp.driver' => 'meta_cloud_api',
+                'services.whatsapp.dry_run' => false,
+                'services.whatsapp.require_consent' => true,
+                'services.whatsapp.test_allowlist_only' => false,
+                'services.whatsapp.graph_base_url' => 'https://graph.facebook.com',
+                'services.whatsapp.graph_version' => 'v21.0',
+                'services.whatsapp.phone_number_id' => '556677889900',
+                'services.whatsapp.access_token' => 'meta-token-seven-rev',
+                'services.whatsapp.template_name' => 'notifikasi_pemindahan_ruangan',
+                'services.whatsapp.template_language' => 'id',
             ]);
 
             $event = Event::create([
@@ -446,9 +477,11 @@ class SevenRevisionsTest extends TestCase
 
             Http::preventStrayRequests();
 
-            // Gateway mengembalikan HTTP 500
+            // Meta Graph API mengembalikan HTTP 500
             Http::fake([
-                'https://wa-gateway.test/*' => Http::response(['error' => 'Server down'], 500),
+                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
+                    'error' => ['message' => 'Meta service unavailable', 'code' => 2],
+                ], 500),
             ]);
 
             $response = $this->actingAs($this->admin)->put(route('events.move', $event), [
@@ -469,9 +502,11 @@ class SevenRevisionsTest extends TestCase
                 'user_id' => $this->guru->id,
             ]);
 
-            // Gateway melempar ConnectionException pada API moveRoom
+            // Meta Graph API melempar ConnectionException pada API moveRoom
+            Http::swap(new \Illuminate\Http\Client\Factory());
+            Http::preventStrayRequests();
             Http::fake([
-                'https://wa-gateway.test/*' => fn () => throw new ConnectionException('Connection timeout'),
+                'https://graph.facebook.com/v21.0/556677889900/messages' => fn () => throw new ConnectionException('Connection timeout'),
             ]);
 
             $apiResponse = $this->actingAsApiUser($this->admin)
@@ -482,7 +517,7 @@ class SevenRevisionsTest extends TestCase
 
             $apiResponse->assertOk()
                 ->assertJsonPath('success', true)
-                ->assertJsonPath('whatsapp_notification.status', 'failed');
+                ->assertJsonPath('whatsapp_notification.status', 'ambiguous_timeout');
 
             $this->assertDatabaseHas('events', [
                 'id' => $event->id,

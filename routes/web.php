@@ -12,6 +12,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ComplaintController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\TeacherProfileController;
 
 
 /*
@@ -408,6 +409,25 @@ Route::middleware(['auth', 'role:guru'])->group(function () {
 
     Route::post('/complaints', [ComplaintController::class, 'store'])
         ->name('complaints.store');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pengaturan Notifikasi WhatsApp - Guru
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get('/guru/whatsapp', [TeacherProfileController::class, 'whatsappSettings'])
+        ->name('guru.whatsapp.settings');
+
+    Route::put('/guru/whatsapp', [TeacherProfileController::class, 'updateWhatsAppSettings'])
+        ->name('guru.whatsapp.update');
+
+    Route::delete('/guru/whatsapp/consent', [TeacherProfileController::class, 'revokeWhatsAppConsent'])
+        ->name('guru.whatsapp.consent.destroy');
+
+    Route::delete('/guru/whatsapp/phone', [TeacherProfileController::class, 'removeWhatsAppPhone'])
+        ->name('guru.whatsapp.phone.destroy');
 
 });
 

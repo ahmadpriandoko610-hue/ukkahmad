@@ -12,10 +12,13 @@ use App\Models\Room;
 use App\Models\Complaint;
 use App\Models\Notification;
 use App\Models\ScheduleNotification;
+use App\Models\WhatsAppNotificationLog;
 
 class User extends Authenticatable
 {
     use HasFactory, Notifiable;
+
+    private bool $allowConsentOnPhoneChange = false;
 
     /**
      * Field yang boleh diisi secara mass assignment.
@@ -26,6 +29,9 @@ class User extends Authenticatable
         'password',
         'role',
         'phone',
+        'whatsapp_opt_in',
+        'whatsapp_opt_in_at',
+        'whatsapp_opt_in_source',
     ];
 
     /**
@@ -46,6 +52,8 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'whatsapp_opt_in' => 'boolean',
+            'whatsapp_opt_in_at' => 'datetime',
         ];
     }
 
@@ -119,21 +127,138 @@ class User extends Authenticatable
     }
 
     /**
+     * Format nomor telepon tersamar (mis. 6281******890) agar aman ditampilkan di UI dan log.
+     */
+    public static function maskPhoneNumber(?string $phone): ?string
+    {
+        if ($phone === null) {
+            return null;
+        }
+
+        $trimmed = trim($phone);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $normalized = static::normalizePhoneNumber($trimmed) ?? preg_replace('/\s+/', '', $trimmed);
+        $length = strlen((string) $normalized);
+        if ($length === 0) {
+            return null;
+        }
+
+        if ($length <= 8) {
+            return str_repeat('*', $length);
+        }
+
+        return substr((string) $normalized, 0, 4)
+            . str_repeat('*', $length - 7)
+            . substr((string) $normalized, -3);
+    }
+
+    public function getMaskedPhoneAttribute(): ?string
+    {
+        return static::maskPhoneNumber($this->phone);
+    }
+
+    /**
+     * Cek apakah user memiliki persetujuan aktif untuk menerima notifikasi WhatsApp pemindahan ruangan.
+     * Hanya berlaku untuk role guru dengan nomor WhatsApp valid dan status opt-in aktif.
+     */
+    public function hasWhatsAppConsent(): bool
+    {
+        return $this->role === 'guru'
+            && (bool) $this->whatsapp_opt_in
+            && static::normalizePhoneNumber($this->phone) !== null;
+    }
+
+    /**
+     * Mencatat persetujuan eksplisit Guru terhadap notifikasi WhatsApp pemindahan ruangan.
+     */
+    public function grantWhatsAppConsent(string $source = 'guru_self_service', ?string $newPhone = null): self
+    {
+        if ($newPhone !== null) {
+            $normalizedNewPhone = static::normalizePhoneNumber($newPhone);
+            $this->phone = $normalizedNewPhone;
+            $this->allowConsentOnPhoneChange = true;
+        }
+
+        $normalizedCurrent = static::normalizePhoneNumber($this->phone);
+        if ($this->role !== 'guru' || $normalizedCurrent === null) {
+            $this->allowConsentOnPhoneChange = false;
+
+            return $this->revokeWhatsAppConsent();
+        }
+
+        $this->phone = $normalizedCurrent;
+        $this->whatsapp_opt_in = true;
+        $this->whatsapp_opt_in_at = now();
+        $this->whatsapp_opt_in_source = substr(trim($source), 0, 50) ?: 'guru_self_service';
+
+        return $this;
+    }
+
+    /**
+     * Mencabut persetujuan notifikasi WhatsApp.
+     */
+    public function revokeWhatsAppConsent(): self
+    {
+        $this->whatsapp_opt_in = false;
+        $this->whatsapp_opt_in_at = null;
+        $this->whatsapp_opt_in_source = null;
+
+        return $this;
+    }
+
+    /**
      * Model boot events:
      * Pastikan hanya role guru dan pic yang dapat menyimpan nomor WhatsApp ternormalisasi,
-     * sementara role admin dan siswa selalu menyimpan NULL.
+     * sementara role admin dan siswa selalu menyimpan NULL, dan persetujuan hanya berlaku
+     * bagi role guru dengan pencabutan otomatis saat nomor dihapus, diganti, atau role berubah.
      */
     protected static function booted(): void
     {
         static::saving(function (User $user) {
             if (!static::canHaveWhatsAppPhone($user->role)) {
                 $user->phone = null;
+                $user->revokeWhatsAppConsent();
 
                 return;
             }
 
             $rawPhone = trim((string) ($user->phone ?? ''));
-            $user->phone = $rawPhone !== '' ? static::normalizePhoneNumber($rawPhone) : null;
+            $normalizedPhone = $rawPhone !== '' ? static::normalizePhoneNumber($rawPhone) : null;
+            $user->phone = $normalizedPhone;
+
+            // Persetujuan notifikasi pemindahan ruangan hanya berlaku untuk role guru
+            // dan wajib dicabut apabila nomor WhatsApp kosong/dihapus.
+            if ($user->role !== 'guru' || $normalizedPhone === null) {
+                $user->revokeWhatsAppConsent();
+
+                return;
+            }
+
+            // Jika nomor WhatsApp diganti ke nomor lain tanpa pembaruan consent eksplisit,
+            // cabut persetujuan lama agar nomor baru wajib mendapatkan persetujuan ulang.
+            if ($user->exists) {
+                $originalPhone = static::normalizePhoneNumber($user->getOriginal('phone'));
+                if ($originalPhone !== $normalizedPhone && !$user->allowConsentOnPhoneChange) {
+                    $user->revokeWhatsAppConsent();
+
+                    return;
+                }
+            }
+
+            if ($user->whatsapp_opt_in) {
+                $user->whatsapp_opt_in = true;
+                $user->whatsapp_opt_in_at = $user->whatsapp_opt_in_at ?? now();
+                $user->whatsapp_opt_in_source = $user->whatsapp_opt_in_source ?: 'guru_self_service';
+            } else {
+                $user->revokeWhatsAppConsent();
+            }
+        });
+
+        static::saved(function (User $user) {
+            $user->allowConsentOnPhoneChange = false;
         });
     }
 
@@ -213,5 +338,15 @@ class User extends Authenticatable
             'user_id'
         );
     }
-    
+
+    /**
+     * Riwayat log notifikasi WhatsApp pemindahan ruangan.
+     */
+    public function whatsappNotificationLogs(): HasMany
+    {
+        return $this->hasMany(
+            WhatsAppNotificationLog::class,
+            'recipient_user_id'
+        );
+    }
 }
