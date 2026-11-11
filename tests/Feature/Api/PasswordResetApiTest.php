@@ -4,7 +4,9 @@ namespace Tests\Feature\Api;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
@@ -254,5 +256,120 @@ class PasswordResetApiTest extends TestCase
         $loginResponse->assertOk()
             ->assertJson(['success' => true])
             ->assertJsonStructure(['data' => ['token', 'role']]);
+    }
+
+    public function test_reset_password_revokes_all_active_api_tokens_without_affecting_other_users_and_allows_new_login(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        $this->fakeRawMailer();
+
+        $user = User::factory()->create([
+            'role' => 'guru',
+            'email' => 'guru.reset@sekolah.sch.id',
+            'password' => Hash::make('password-lama-123'),
+        ]);
+        $otherUser = User::factory()->create([
+            'role' => 'guru',
+            'email' => 'guru.lain@sekolah.sch.id',
+            'password' => Hash::make('password-lain-123'),
+        ]);
+
+        // Terbitkan 2 token aktif untuk pengguna yang sama (simulasi 2 perangkat berbeda) dan 1 token untuk pengguna lain
+        $login1 = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password-lama-123',
+        ])->assertOk();
+        $oldToken1 = $login1->json('data.token');
+
+        $login2 = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password-lama-123',
+        ])->assertOk();
+        $oldToken2 = $login2->json('data.token');
+
+        $otherLogin = $this->postJson('/api/login', [
+            'email' => $otherUser->email,
+            'password' => 'password-lain-123',
+        ])->assertOk();
+        $otherToken = $otherLogin->json('data.token');
+
+        $this->withToken($oldToken1)->getJson('/api/profile')->assertOk()->assertJsonPath('data.id', $user->id);
+        $this->withToken($oldToken2)->getJson('/api/profile')->assertOk()->assertJsonPath('data.id', $user->id);
+        $this->withToken($otherToken)->getJson('/api/profile')->assertOk()->assertJsonPath('data.id', $otherUser->id);
+
+        // Jalankan alur reset password API
+        $this->postJson('/api/forgot-password', ['email' => $user->email])->assertOk();
+        $code = $this->extractCodeFromMail($this->sentRawMessages[0]['body']);
+        $verify = $this->postJson('/api/verify-password-code', [
+            'email' => $user->email,
+            'code' => $code,
+        ])->assertOk();
+
+        $this->postJson('/api/reset-password', [
+            'email' => $user->email,
+            'reset_token' => $verify->json('data.reset_token'),
+            'password' => 'password-baru-789',
+            'password_confirmation' => 'password-baru-789',
+        ])->assertOk()->assertJsonPath('success', true);
+
+        // Seluruh token lama pengguna wajib langsung ditolak (401) dan key cache dibersihkan
+        $this->assertFalse(Cache::has('api_token_' . hash('sha256', $oldToken1)));
+        $this->assertFalse(Cache::has('api_token_' . hash('sha256', $oldToken2)));
+        $this->withToken($oldToken1)->getJson('/api/profile')->assertUnauthorized();
+        $this->withToken($oldToken2)->getJson('/api/profile')->assertUnauthorized();
+
+        // Token pengguna lain tidak boleh terpengaruh
+        $this->withToken($otherToken)->getJson('/api/profile')->assertOk()->assertJsonPath('data.id', $otherUser->id);
+
+        // Login ulang dengan password baru menghasilkan token baru yang valid, sedangkan token lama tetap 401
+        $newLogin = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password-baru-789',
+        ])->assertOk();
+        $newToken = $newLogin->json('data.token');
+
+        $this->withToken($newToken)->getJson('/api/profile')->assertOk()->assertJsonPath('data.id', $user->id);
+        $this->withToken($oldToken1)->getJson('/api/profile')->assertUnauthorized();
+        $this->withToken($oldToken2)->getJson('/api/profile')->assertUnauthorized();
+    }
+
+    public function test_web_password_reset_also_revokes_active_api_tokens(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        $this->fakeRawMailer();
+
+        $user = User::factory()->create([
+            'role' => 'pic',
+            'email' => 'pic.webreset@sekolah.sch.id',
+            'password' => Hash::make('password-lama-123'),
+        ]);
+
+        $login = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password-lama-123',
+        ])->assertOk();
+        $oldApiToken = $login->json('data.token');
+
+        $this->withToken($oldApiToken)->getJson('/api/profile')->assertOk();
+
+        // Reset password melalui rute web
+        $this->post(route('password.email'), ['email' => $user->email])->assertRedirect();
+        $code = $this->extractCodeFromMail($this->sentRawMessages[0]['body']);
+        $this->post(route('password.code.verify'), ['email' => $user->email, 'code' => $code])
+            ->assertRedirect(route('password.reset.form'));
+        $this->post(route('password.update'), [
+            'password' => 'password-web-baru',
+            'password_confirmation' => 'password-web-baru',
+        ])->assertRedirect(route('login'));
+
+        // Token API lama harus tercabut dan login API baru tetap bekerja
+        $this->withToken($oldApiToken)->getJson('/api/profile')->assertUnauthorized();
+
+        $newLogin = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password-web-baru',
+        ])->assertOk();
+
+        $this->withToken($newLogin->json('data.token'))->getJson('/api/profile')->assertOk();
     }
 }

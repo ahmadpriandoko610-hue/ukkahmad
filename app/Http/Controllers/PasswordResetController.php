@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Api\AuthController as ApiAuthController;
 use App\Models\User;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\RedirectResponse;
@@ -172,6 +173,7 @@ class PasswordResetController extends Controller
         ])->save();
 
         DB::table('password_reset_tokens')->where('email', $user->email)->delete();
+        ApiAuthController::revokeAllTokensForUser($user->id);
         $request->session()->forget([
             'password_reset_verified_email',
             'password_reset_verified_at',

@@ -438,7 +438,7 @@ class EventController extends Controller
     {
         $authUser = $this->getAuthUser($request);
 
-        if ($authUser->role !== 'guru') {
+        if (!$authUser || $authUser->role !== 'guru') {
             return response()->json([
                 'success' => false,
                 'message' => 'Hanya guru yang dapat mengubah agenda melalui API.'
@@ -455,7 +455,7 @@ class EventController extends Controller
         }
 
         // Validasi kepemilikan jika user adalah guru
-        if ($event->requester_id !== $authUser->id) {
+        if ((int) $event->requester_id !== (int) $authUser->id) {
             return response()->json([
                 'success' => false,
                 'message' => 'Anda tidak memiliki hak untuk mengubah agenda milik pengguna lain.'
@@ -477,12 +477,24 @@ class EventController extends Controller
         $request->validate([
             'judul' => 'required|string|max:255',
             'tanggal' => 'required|date|after:today',
+            'tanggal_selesai' => 'nullable|date|after_or_equal:tanggal',
             'jam_mulai' => 'required|date_format:H:i',
             'jam_selesai' => 'required|date_format:H:i',
             'ruangan_id' => 'required|exists:rooms,id',
             'keterangan' => 'nullable|string',
         ], [
+            'judul.required' => 'Judul agenda wajib diisi.',
+            'tanggal.required' => 'Tanggal agenda wajib diisi.',
+            'tanggal.date' => 'Tanggal agenda tidak valid.',
             'tanggal.after' => 'Peminjaman ruangan harus diajukan minimal H-1 (sehari sebelum tanggal agenda).',
+            'tanggal_selesai.date' => 'Tanggal selesai agenda tidak valid.',
+            'tanggal_selesai.after_or_equal' => 'Tanggal selesai harus sama dengan atau setelah tanggal mulai.',
+            'jam_mulai.required' => 'Jam mulai wajib diisi.',
+            'jam_mulai.date_format' => 'Format jam mulai harus HH:MM.',
+            'jam_selesai.required' => 'Jam selesai wajib diisi.',
+            'jam_selesai.date_format' => 'Format jam selesai harus HH:MM.',
+            'ruangan_id.required' => 'Ruangan wajib dipilih.',
+            'ruangan_id.exists' => 'Ruangan yang dipilih tidak ditemukan.',
         ]);
 
         if ($request->jam_mulai < '06:00' || $request->jam_mulai > '18:00') {
@@ -506,43 +518,115 @@ class EventController extends Controller
             ], 422);
         }
 
-        $room = Room::whereKey($request->ruangan_id)
-            ->where('is_active', true)
-            ->first();
+        $startDate = Carbon::parse($request->tanggal)->toDateString();
+        $endDate = $request->filled('tanggal_selesai')
+            ? Carbon::parse($request->tanggal_selesai)->toDateString()
+            : $startDate;
+        $persistedEndDate = $request->filled('tanggal_selesai') ? $endDate : null;
+        $targetRoomId = (int) $request->ruangan_id;
+        $jamMulai = (string) $request->jam_mulai;
+        $jamSelesai = (string) $request->jam_selesai;
 
-        if (!$room) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan yang dipilih tidak aktif.'
-            ], 422);
+        $errorResponse = null;
+        $updatedEvent = null;
+
+        DB::transaction(function () use (
+            $id,
+            $authUser,
+            $request,
+            $startDate,
+            $endDate,
+            $persistedEndDate,
+            $targetRoomId,
+            $jamMulai,
+            $jamSelesai,
+            &$errorResponse,
+            &$updatedEvent
+        ): void {
+            /** @var Event|null $lockedEvent */
+            $lockedEvent = Event::query()->whereKey($id)->lockForUpdate()->first();
+
+            if (!$lockedEvent) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Agenda tidak ditemukan'
+                ], 404);
+
+                return;
+            }
+
+            if ((int) $lockedEvent->requester_id !== (int) $authUser->id) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki hak untuk mengubah agenda milik pengguna lain.'
+                ], 403);
+
+                return;
+            }
+
+            if ($lockedEvent->status !== 'Menunggu') {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Hanya agenda berstatus Menunggu yang dapat diubah.'
+                ], 422);
+
+                return;
+            }
+
+            $room = Room::query()->whereKey($targetRoomId)->lockForUpdate()->first();
+            if (!$room || !$room->is_active) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => $room
+                        ? 'Ruangan "' . ($room->room_name ?: $room->nama_ruangan) . '" sedang tidak aktif.'
+                        : 'Ruangan yang dipilih tidak aktif.'
+                ], 422);
+
+                return;
+            }
+
+            $conflictQuery = Event::query()
+                ->where('room_id', $room->id)
+                ->where(function ($q) use ($startDate, $endDate): void {
+                    $q->whereDate('date', '<=', $endDate)
+                        ->whereDate(DB::raw('COALESCE(end_date, date)'), '>=', $startDate);
+                })
+                ->where('status', '!=', 'Ditolak')
+                ->whereRaw('SUBSTR(start_time, 1, 5) < ?', [$jamSelesai])
+                ->whereRaw('SUBSTR(end_time, 1, 5) > ?', [$jamMulai])
+                ->where('id', '!=', $lockedEvent->id);
+
+            if (DB::connection()->getDriverName() !== 'sqlite') {
+                $conflictQuery->lockForUpdate();
+            }
+
+            if ($conflictQuery->exists()) {
+                $errorResponse = response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan sudah terpakai pada waktu tersebut.'
+                ], 422);
+
+                return;
+            }
+
+            $lockedEvent->update([
+                'event_name' => $request->judul,
+                'date' => $startDate,
+                'end_date' => $persistedEndDate,
+                'start_time' => $jamMulai,
+                'end_time' => $jamSelesai,
+                'room_id' => $room->id,
+                'description' => $request->keterangan,
+            ]);
+
+            $updatedEvent = $lockedEvent;
+        });
+
+        if ($errorResponse !== null) {
+            return $errorResponse;
         }
 
-        $conflict = Event::query()
-            ->where('room_id', $request->ruangan_id)
-            ->whereDate('date', $request->tanggal)
-            ->where('status', '!=', 'Ditolak')
-            ->where('start_time', '<', $request->jam_selesai)
-            ->where('end_time', '>', $request->jam_mulai)
-            ->where('id', '!=', $event->id)
-            ->exists();
-
-        if ($conflict) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ruangan sudah terpakai pada waktu tersebut.'
-            ], 422);
-        }
-
-        $event->update([
-            'event_name' => $request->judul,
-            'date' => $request->tanggal,
-            'start_time' => $request->jam_mulai,
-            'end_time' => $request->jam_selesai,
-            'room_id' => $request->ruangan_id,
-            'description' => $request->keterangan,
-        ]);
-
-        $event->load(['room', 'requester']);
+        $event = ($updatedEvent ?? Event::find($id))?->load(['room', 'requester']);
 
         return response()->json([
             'success' => true,

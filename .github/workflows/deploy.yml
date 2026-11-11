@@ -2737,6 +2737,16 @@ jobs:
             }
           '
 
+          # CATATAN KEAMANAN TRANSFER FTP / FTPS:
+          # Hasil pemeriksaan langsung server cPanel (ahmad-rapi.web.id / ftp.ahmad-rapi.web.id, IP 157.66.55.62):
+          # 1) Port 990 (implicit FTPS) menolak koneksi (Connection refused).
+          # 2) Port 21 (ProFTPD AUTH TLS/SSL) hanya menyajikan leaf certificate CN/SAN=srv100.hypercloudhost.com
+          #    tanpa intermediate CA chain (Let's Encrypt YR1), sehingga verifikasi TLS ketat (--ssl-reqd) gagal
+          #    dengan hostname mismatch dan OpenSSL error 21 (unable to verify the first certificate).
+          # 3) Menonaktifkan verifikasi sertifikat (--insecure / -k) dilarang karena rentan MITM.
+          # Risiko saat ini: sesi FTP control/data berjalan plaintext tanpa enkripsi TLS (hanya deploy_payload.zip
+          # yang terenkripsi DEPLOY_TOKEN dan Stage 3 memakai HTTPS). Dokumentasi lengkap & rekomendasi migrasi
+          # ke FTPS terverifikasi atau SFTP tersedia pada docs/DEPLOYMENT_FTP_SECURITY.md.
           # 1. Bersihkan sisa file state lama .ftp-deploy-sync-state.json secara spesifik tanpa menyentuh file produksi lain
           set +e
           curl --silent --show-error --config "$CURL_CFG" \
@@ -2867,6 +2877,9 @@ jobs:
             }
           '
 
+          # CATATAN KEAMANAN: Plaintext ftp:// masih dipertahankan agar deployment tidak gagal sementara sertifikat
+          # FTPS ProFTPD hosting (CN/SAN=srv100.hypercloudhost.com, rantai intermediate tidak lengkap) belum dapat
+          # diverifikasi secara ketat tanpa --insecure. Lihat docs/DEPLOYMENT_FTP_SECURITY.md untuk rencana migrasi.
           # 1. Pastikan pelindung .htaccess tetap aktif di public_html/.deploy_staging/.htaccess
           echo "Memastikan public_html/.deploy_staging/.htaccess pelindung terpasang..."
           curl --silent --show-error --fail --config "$CURL_CFG" \

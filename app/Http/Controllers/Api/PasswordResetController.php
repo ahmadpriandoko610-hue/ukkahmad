@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Api\AuthController as ApiAuthController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PasswordResetController as WebPasswordResetController;
 use App\Models\User;
@@ -221,12 +222,8 @@ class PasswordResetController extends Controller
         DB::table('password_reset_tokens')->where('email', $user->email)->delete();
         Cache::forget($cacheKey);
 
-        // Cabut token API aktif pengguna jika ada
-        $activeTokenHash = Cache::get('user_active_token_' . $user->id);
-        if ($activeTokenHash) {
-            Cache::forget('api_token_' . $activeTokenHash);
-            Cache::forget('user_active_token_' . $user->id);
-        }
+        // Cabut seluruh token API aktif milik pengguna
+        ApiAuthController::revokeAllTokensForUser($user->id);
 
         event(new PasswordReset($user));
 

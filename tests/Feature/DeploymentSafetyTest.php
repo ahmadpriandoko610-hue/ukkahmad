@@ -5716,5 +5716,30 @@ class DeploymentSafetyTest extends TestCase
         $formatted = $formatCurlUserConfig('deploy@ahmad-rapi.web.id', 'P@ss"w\\ord:123!');
         $this->assertSame('user = "deploy@ahmad-rapi.web.id:P@ss\\"w\\\\ord:123!"' . "\n", $formatted);
     }
+
+    /**
+     * Uji 143: Risiko plaintext FTP, larangan --insecure/-k, dan rekomendasi migrasi FTPS/SFTP terdokumentasi jelas tanpa memutus deployment
+     */
+    public function test_ftp_transfer_security_risks_and_no_insecure_tls_bypass_are_documented(): void
+    {
+        $wf = $this->parseAndValidateDeployWorkflow();
+        $this->assertDoesNotMatchRegularExpression('/curl\b[^\n]*\s(-k|--insecure)\b/', $wf['raw']);
+
+        $stage1Run = (string) ($wf['stepsByName']['🛡️ Stage 1: Upload Protection Shield via FTP']['run'] ?? '');
+        $stage2Run = (string) ($wf['stepsByName']['📦 Stage 2: Upload Payload ZIP via FTP']['run'] ?? '');
+
+        $this->assertStringContainsString('srv100.hypercloudhost.com', $stage1Run);
+        $this->assertStringContainsString('docs/DEPLOYMENT_FTP_SECURITY.md', $stage1Run);
+        $this->assertStringContainsString('docs/DEPLOYMENT_FTP_SECURITY.md', $stage2Run);
+
+        $docPath = base_path('docs/DEPLOYMENT_FTP_SECURITY.md');
+        $this->assertFileExists($docPath);
+        $doc = file_get_contents($docPath);
+        $this->assertNotFalse($doc);
+        $this->assertStringContainsString('srv100.hypercloudhost.com', $doc);
+        $this->assertStringContainsString('--insecure', $doc);
+        $this->assertStringContainsString('FTPS', $doc);
+        $this->assertStringContainsString('SFTP', $doc);
+    }
 }
 

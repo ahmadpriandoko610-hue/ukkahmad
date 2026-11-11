@@ -13,6 +13,78 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
+    public const TOKEN_CACHE_PREFIX = 'api_token_';
+    public const TOKEN_EPOCH_CACHE_PREFIX = 'api_token_epoch_';
+    public const USER_ACTIVE_TOKENS_PREFIX = 'user_active_tokens_';
+    public const USER_TOKEN_EPOCH_PREFIX = 'user_token_epoch_';
+    public const LEGACY_ACTIVE_TOKEN_PREFIX = 'user_active_token_';
+    private const TOKEN_TTL_DAYS = 30;
+    private const EPOCH_TTL_DAYS = 31;
+
+    /**
+     * Terbitkan Bearer token API baru untuk pengguna dan catat hash aktifnya.
+     */
+    public static function issueTokenForUser(int $userId): string
+    {
+        $token = 'rapi_token_' . bin2hex(random_bytes(24));
+        $tokenHash = hash('sha256', $token);
+        $ttl = now()->addDays(self::TOKEN_TTL_DAYS);
+
+        $currentEpoch = Cache::get(self::USER_TOKEN_EPOCH_PREFIX . $userId);
+        $epoch = is_numeric($currentEpoch) ? max(1, (int) $currentEpoch) : 1;
+        if (is_numeric($currentEpoch)) {
+            Cache::put(self::USER_TOKEN_EPOCH_PREFIX . $userId, $epoch, now()->addDays(self::EPOCH_TTL_DAYS));
+        }
+
+        Cache::put(self::TOKEN_CACHE_PREFIX . $tokenHash, $userId, $ttl);
+        Cache::put(self::TOKEN_EPOCH_CACHE_PREFIX . $tokenHash, $epoch, $ttl);
+
+        $activeKey = self::USER_ACTIVE_TOKENS_PREFIX . $userId;
+        $activeHashes = Cache::get($activeKey, []);
+        if (!is_array($activeHashes)) {
+            $activeHashes = [];
+        }
+
+        $activeHashes = array_values(array_filter(
+            $activeHashes,
+            static fn ($hash): bool => is_string($hash) && Cache::has(self::TOKEN_CACHE_PREFIX . $hash)
+        ));
+        $activeHashes[] = $tokenHash;
+
+        Cache::put($activeKey, array_values(array_unique($activeHashes)), $ttl);
+
+        return $token;
+    }
+
+    /**
+     * Cabut seluruh Bearer token API aktif milik pengguna (termasuk multi-perangkat).
+     */
+    public static function revokeAllTokensForUser(int $userId): void
+    {
+        $activeKey = self::USER_ACTIVE_TOKENS_PREFIX . $userId;
+        $activeHashes = Cache::get($activeKey, []);
+        if (is_array($activeHashes)) {
+            foreach ($activeHashes as $tokenHash) {
+                if (is_string($tokenHash) && $tokenHash !== '') {
+                    Cache::forget(self::TOKEN_CACHE_PREFIX . $tokenHash);
+                    Cache::forget(self::TOKEN_EPOCH_CACHE_PREFIX . $tokenHash);
+                }
+            }
+        }
+        Cache::forget($activeKey);
+
+        $legacyActiveHash = Cache::get(self::LEGACY_ACTIVE_TOKEN_PREFIX . $userId);
+        if (is_string($legacyActiveHash) && $legacyActiveHash !== '') {
+            Cache::forget(self::TOKEN_CACHE_PREFIX . $legacyActiveHash);
+            Cache::forget(self::TOKEN_EPOCH_CACHE_PREFIX . $legacyActiveHash);
+        }
+        Cache::forget(self::LEGACY_ACTIVE_TOKEN_PREFIX . $userId);
+
+        $currentEpoch = Cache::get(self::USER_TOKEN_EPOCH_PREFIX . $userId);
+        $nextEpoch = (is_numeric($currentEpoch) ? max(1, (int) $currentEpoch) : 1) + 1;
+        Cache::put(self::USER_TOKEN_EPOCH_PREFIX . $userId, $nextEpoch, now()->addDays(self::EPOCH_TTL_DAYS));
+    }
+
     /**
      * Login API untuk Flutter Mobile.
      * Mendukung login dengan Email atau Username (nama akun).
@@ -64,8 +136,7 @@ class AuthController extends Controller
         }
 
         // Token bearer berumur 30 hari, divalidasi middleware api.token.
-        $token = 'rapi_token_' . bin2hex(random_bytes(24));
-        Cache::put('api_token_' . hash('sha256', $token), $user->id, now()->addDays(30));
+        $token = self::issueTokenForUser($user->id);
 
         return response()->json([
             'success' => true,
@@ -185,8 +256,28 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         if ($token = $request->bearerToken()) {
-            Cache::forget('api_token_' . hash('sha256', $token));
-            Cache::forget('api_token_' . $token);
+            $tokenHash = hash('sha256', $token);
+            Cache::forget(self::TOKEN_CACHE_PREFIX . $tokenHash);
+            Cache::forget(self::TOKEN_EPOCH_CACHE_PREFIX . $tokenHash);
+            Cache::forget(self::TOKEN_CACHE_PREFIX . $token);
+
+            if ($user = $request->user()) {
+                $activeKey = self::USER_ACTIVE_TOKENS_PREFIX . $user->id;
+                $activeHashes = Cache::get($activeKey, []);
+                if (is_array($activeHashes)) {
+                    $remaining = array_values(array_filter(
+                        $activeHashes,
+                        static fn ($hash): bool => is_string($hash)
+                            && $hash !== $tokenHash
+                            && Cache::has(self::TOKEN_CACHE_PREFIX . $hash)
+                    ));
+                    if ($remaining === []) {
+                        Cache::forget($activeKey);
+                    } else {
+                        Cache::put($activeKey, $remaining, now()->addDays(self::TOKEN_TTL_DAYS));
+                    }
+                }
+            }
         }
 
         return response()->json([
