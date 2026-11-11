@@ -5070,6 +5070,7 @@ class DeploymentSafetyTest extends TestCase
                 'zipInStagingExists' => file_exists($stagingDir . '/deploy_payload.zip'),
                 'zipInPublicExists' => file_exists($pubHtml . '/deploy_payload.zip'),
                 'selfFileExists' => file_exists($selfScriptPath),
+                'legacySyncStateExists' => file_exists($pubHtml . '/.ftp-deploy-sync-state.json'),
                 'htaccessExists' => file_exists($stagingDir . '/.htaccess'),
                 'backupRootExists' => is_dir($stagingDir . '/pre_deploy_backup'),
                 'downFileExists' => file_exists($ukkRapi . '/storage/framework/down'),
@@ -5080,7 +5081,10 @@ class DeploymentSafetyTest extends TestCase
                 'migratedPublicFiles' => $migratedPublicFiles,
                 'existingAppPhp' => file_exists($ukkRapi . '/app/Existing.php') ? file_get_contents($ukkRapi . '/app/Existing.php') : null,
                 'existingIndexPhp' => file_exists($pubHtml . '/index.php') ? file_get_contents($pubHtml . '/index.php') : null,
+                'pubHtaccessContent' => file_exists($pubHtml . '/.htaccess') ? file_get_contents($pubHtml . '/.htaccess') : null,
+                'buildManifestContent' => file_exists($pubHtml . '/build/manifest.json') ? file_get_contents($pubHtml . '/build/manifest.json') : null,
                 'envContent' => file_exists($ukkRapi . '/.env') ? file_get_contents($ukkRapi . '/.env') : null,
+                'envProductionContent' => file_exists($ukkRapi . '/.env.production') ? file_get_contents($ukkRapi . '/.env.production') : null,
             ];
         } finally {
             // Bersihkan backup storage fisik di sandbox jika terbentuk (berada langsung di dalam $sandboxDir/storage_physical_backup_*)
@@ -5151,24 +5155,65 @@ class DeploymentSafetyTest extends TestCase
             'deploy_payload.zip wajib ditempatkan di dalam folder .deploy_staging/ yang terlindungi.'
         );
 
-        // 4. Stage 1 & Stage 2 FTP server-dir wajib identik ('public_html/') dan memetakan ke __DIR__ public_html
-        $this->assertSame('SamKirkland/FTP-Deploy-Action@v4.3.5', $stage1['uses']);
-        $this->assertSame('SamKirkland/FTP-Deploy-Action@v4.3.5', $stage2['uses']);
-        $this->assertSame('./ftp_stage1_shield/', $stage1['with']['local-dir'] ?? null);
-        $this->assertSame('./ftp_stage2_payload/', $stage2['with']['local-dir'] ?? null);
+        // 4. Stage 1 & Stage 2 wajib menggunakan FTP stateless curl (tanpa FTP-Deploy-Action / .ftp-deploy-sync-state.json / dangerous-clean-slate)
+        $this->assertStringNotContainsString('FTP-Deploy-Action', $wf['raw'], 'Workflow tidak boleh menggunakan SamKirkland/FTP-Deploy-Action lagi.');
+        $this->assertStringNotContainsString('dangerous-clean-slate', $wf['raw'], 'dangerous-clean-slate dilarang keras pada public_html/.');
+        $this->assertNull($stage1['uses'], 'Stage 1 wajib menjalankan langkah curl FTP stateless (bukan uses action eksternal).');
+        $this->assertNull($stage2['uses'], 'Stage 2 wajib menjalankan langkah curl FTP stateless (bukan uses action eksternal).');
 
-        $stage1ServerDir = $stage1['with']['server-dir'] ?? null;
-        $stage2ServerDir = $stage2['with']['server-dir'] ?? null;
-        $this->assertSame('public_html/', $stage1ServerDir, 'Stage 1 FTP server-dir wajib menggunakan format public_html/.');
-        $this->assertSame($stage1ServerDir, $stage2ServerDir, 'Stage 1 dan Stage 2 FTP server-dir wajib konsisten 100%.');
-        $this->assertStringNotContainsString('/public_html/', (string) $stage1ServerDir);
+        foreach (['FTP_SERVER', 'FTP_USERNAME', 'FTP_PASSWORD'] as $secretKey) {
+            $this->assertSame('${{ secrets.' . $secretKey . ' }}', $stage1['env'][$secretKey] ?? null);
+            $this->assertSame('${{ secrets.' . $secretKey . ' }}', $stage2['env'][$secretKey] ?? null);
+        }
 
-        // Pastikan relasi __DIR__ inside auto_extract.php konsisten dengan server-dir: public_html/
+        $stage1Run = (string) ($stage1['run'] ?? '');
+        $stage2Run = (string) ($stage2['run'] ?? '');
+
+        // Stage 1: cek & hapus spesifik .ftp-deploy-sync-state.json lama, buat .deploy_staging otomatis (--ftp-create-dirs), upload .htaccess lalu probe lalu auto_extract.php
+        $this->assertStringContainsString('--quote "-DELE .ftp-deploy-sync-state.json"', $stage1Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/.ftp-deploy-sync-state.json', $stage1Run);
+        $this->assertStringContainsString('--ftp-pasv', $stage1Run);
+        $this->assertStringContainsString('--ftp-create-dirs', $stage1Run);
+        $this->assertStringContainsString('--config "$CURL_CFG"', $stage1Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess', $stage1Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/.deploy_staging/${PROBE_FILENAME}', $stage1Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/auto_extract.php', $stage1Run);
+
+        $posDeleState = strpos($stage1Run, '-DELE .ftp-deploy-sync-state.json');
+        $posUploadHtaccess1 = strpos($stage1Run, 'ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess');
+        $posUploadProbe = strpos($stage1Run, 'ftp://${FTP_HOST}/public_html/.deploy_staging/${PROBE_FILENAME}');
+        $posUploadExtractor1 = strpos($stage1Run, 'ftp://${FTP_HOST}/public_html/auto_extract.php');
+        $this->assertNotFalse($posDeleState);
+        $this->assertNotFalse($posUploadHtaccess1);
+        $this->assertNotFalse($posUploadProbe);
+        $this->assertNotFalse($posUploadExtractor1);
+        $this->assertLessThan($posUploadHtaccess1, $posDeleState, 'Pembersihan state lama wajib berjalan sebelum upload Stage 1.');
+        $this->assertLessThan($posUploadProbe, $posUploadHtaccess1, '.htaccess pelindung wajib dibuat & diunggah sebelum probe.');
+        $this->assertLessThan($posUploadExtractor1, $posUploadProbe, 'Urutan upload Stage 1: .htaccess -> probe -> auto_extract.php.');
+
+        // Stage 2: buat/pastikan .deploy_staging, upload .htaccess, deploy_payload.zip ke .deploy_staging/, dan auto_extract.php ke root public_html/
+        $this->assertStringContainsString('--ftp-pasv', $stage2Run);
+        $this->assertStringContainsString('--ftp-create-dirs', $stage2Run);
+        $this->assertStringContainsString('--config "$CURL_CFG"', $stage2Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess', $stage2Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/.deploy_staging/deploy_payload.zip', $stage2Run);
+        $this->assertStringContainsString('ftp://${FTP_HOST}/public_html/auto_extract.php', $stage2Run);
+
+        $posUploadHtaccess2 = strpos($stage2Run, 'ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess');
+        $posUploadPayload2 = strpos($stage2Run, 'ftp://${FTP_HOST}/public_html/.deploy_staging/deploy_payload.zip');
+        $posUploadExtractor2 = strpos($stage2Run, 'ftp://${FTP_HOST}/public_html/auto_extract.php');
+        $this->assertNotFalse($posUploadHtaccess2);
+        $this->assertNotFalse($posUploadPayload2);
+        $this->assertNotFalse($posUploadExtractor2);
+        $this->assertLessThan($posUploadPayload2, $posUploadHtaccess2, '.htaccess pelindung wajib dipastikan aktif sebelum upload payload ZIP.');
+
+        // Pastikan relasi __DIR__ inside auto_extract.php konsisten dengan target public_html/
         $script = $this->getProductionDeployScript();
         $this->assertStringContainsString("\$stagingDir = __DIR__ . '/.deploy_staging';", $script);
         $this->assertStringContainsString("\$ukkRapiRoot = realpath(__DIR__ . '/../ukk_rapi')", $script);
         $this->assertStringContainsString("\$extractPath = realpath(__DIR__ . '/..');", $script);
         $this->assertStringContainsString("\$storageLink = __DIR__ . '/storage';", $script);
+        $this->assertStringContainsString("/.ftp-deploy-sync-state.json", $script);
 
         // Pastikan Verify Shield mengecek HTTP 403 ke dalam /.deploy_staging/
         $this->assertMatchesRegularExpression(
@@ -5554,6 +5599,122 @@ class DeploymentSafetyTest extends TestCase
         $this->assertFalse($res['zipInStagingExists'], 'deploy_payload.zip wajib dihapus saat $cleanupStaging(true).');
         $this->assertFalse($res['selfFileExists'], 'auto_extract.php wajib dihapus saat $cleanupStaging(true).');
         $this->assertTrue($res['backupRootExists'], 'pre_deploy_backup wajib dipertahankan oleh $cleanupStaging(true) untuk audit kegagalan.');
+    }
+
+    /**
+     * Uji 141: Pembersihan sisa state lama .ftp-deploy-sync-state.json berjalan spesifik tanpa mengganggu file produksi lain
+     */
+    public function test_production_script_cleanup_removes_legacy_sync_state_while_preserving_production_files(): void
+    {
+        $baseDir = sys_get_temp_dir() . '/rapi_legacy_state_clean_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $validToken = 'legacy_state_cleanup_token_2026';
+        $zipPath = $baseDir . '/valid_payload.zip';
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->setPassword($validToken);
+        $zip->addFromString('ukk_rapi/bootstrap/app.php', '<?php // updated app bootstrap');
+        $zip->addFromString('ukk_rapi/vendor/autoload.php', '<?php // updated autoload');
+        $zip->addFromString('public_html/index.php', '<?php // updated production index');
+        $zip->close();
+
+        $capturedPubHtml = null;
+
+        $res = $this->runProductionDeployScriptDetailed($zipPath, [
+            'token' => $validToken,
+            'post_token' => $validToken,
+            'zipInStaging' => true,
+            'withStagingShieldFiles' => true,
+            'setup' => function (string $sandboxDir, string $pubHtml, string $ukkRapi) use (&$capturedPubHtml) {
+                $capturedPubHtml = $pubHtml;
+                file_put_contents($ukkRapi . '/.env', "APP_KEY=base64:PROD_KEY_UNCHANGED\nDB_PASSWORD=prod_secret\n");
+                file_put_contents($ukkRapi . '/.env.production', "APP_ENV=production\n");
+                file_put_contents($ukkRapi . '/storage/app/public/existing_upload.txt', 'EXISTING_STORAGE_OBJECT');
+                file_put_contents($pubHtml . '/.htaccess', "<IfModule mod_rewrite.c>\nRewriteEngine On\n</IfModule>\n");
+                @mkdir($pubHtml . '/build', 0755, true);
+                file_put_contents($pubHtml . '/build/manifest.json', '{"app.js":"assets/app.js"}');
+                file_put_contents($pubHtml . '/.ftp-deploy-sync-state.json', '{"description":"legacy sync manifest"}');
+                @mkdir($pubHtml . '/storage', 0755, true);
+                file_put_contents($pubHtml . '/storage/school_evidence.jpg', 'ORIGINAL_SCHOOL_EVIDENCE');
+            },
+        ]);
+
+        File::deleteDirectory($baseDir);
+
+        // Sisa state lama wajib terhapus spesifik, sedangkan file produksi utama (.env, .htaccess, build/, index.php, storage) wajib aman
+        $this->assertFalse($res['legacySyncStateExists'], 'Sisa public_html/.ftp-deploy-sync-state.json wajib terhapus oleh $cleanupStaging.');
+        $this->assertFalse($res['selfFileExists'], 'auto_extract.php wajib terhapus.');
+        $this->assertSame("APP_KEY=base64:PROD_KEY_UNCHANGED\nDB_PASSWORD=prod_secret\n", $res['envContent']);
+        $this->assertSame("APP_ENV=production\n", $res['envProductionContent']);
+        $this->assertSame("<IfModule mod_rewrite.c>\nRewriteEngine On\n</IfModule>\n", $res['pubHtaccessContent']);
+        $this->assertSame('{"app.js":"assets/app.js"}', $res['buildManifestContent']);
+        $this->assertArrayHasKey('existing_upload.txt', $res['migratedPublicFiles']);
+        $this->assertSame('EXISTING_STORAGE_OBJECT', $res['migratedPublicFiles']['existing_upload.txt']);
+        $this->assertNotNull($res['existingIndexPhp']);
+
+        if (str_contains($res['output'], 'DEPLOY_SUCCESS')) {
+            $this->assertStringContainsString('updated production index', (string) $res['existingIndexPhp']);
+            $this->assertFalse($res['stagingDirExists']);
+            $this->assertTrue($res['storageIsLink']);
+            $this->assertSame('ORIGINAL_SCHOOL_EVIDENCE', $res['migratedPublicFiles']['school_evidence.jpg'] ?? null);
+        } else {
+            // Pada Windows non-admin yang menolak symlink, rollback mengembalikan seluruh file produksi & tetap membersihkan .ftp-deploy-sync-state.json
+            $this->assertStringContainsString('SYMLINK_FAILED', $res['output']);
+            $this->assertStringContainsString('[ROLLBACK_SUCCESSFUL]', $res['output']);
+            $this->assertStringContainsString('ORIGINAL_INDEX', (string) $res['existingIndexPhp']);
+            $this->assertSame(['school_evidence.jpg' => 'ORIGINAL_SCHOOL_EVIDENCE'], $res['storageFiles']);
+        }
+    }
+
+    /**
+     * Uji 142: Workflow FTP stateless tidak membocorkan kredensial FTP/DEPLOY_TOKEN ke argumen CLI atau log dan menormalisasi host aman
+     */
+    public function test_stateless_ftp_workflow_secures_credentials_and_normalizes_ftp_host_safely(): void
+    {
+        $wf = $this->parseAndValidateDeployWorkflow();
+        $stage1Run = (string) ($wf['stepsByName']['🛡️ Stage 1: Upload Protection Shield via FTP']['run'] ?? '');
+        $stage2Run = (string) ($wf['stepsByName']['📦 Stage 2: Upload Payload ZIP via FTP']['run'] ?? '');
+        $verifyRun = (string) ($wf['stepsByName']['🔍 Verify Staging Shield Active (HTTP 403 on Probe File)']['run'] ?? '');
+        $stage3Run = (string) ($wf['stepsByName']['⚡ Stage 3: Trigger Secure Extraction on cPanel']['run'] ?? '');
+
+        foreach ([$stage1Run, $stage2Run] as $ftpScript) {
+            // Larang CLI --user, kredensial di URL ftp://user:pass@host, mode verbose curl, dan echo rahasia
+            $this->assertDoesNotMatchRegularExpression('/curl\b[^\n]*\s(-u|--user)\b/', $ftpScript);
+            $this->assertDoesNotMatchRegularExpression('/ftp:\/\/[^"\s]*(\$FTP_USERNAME|\$FTP_PASSWORD)/', $ftpScript);
+            $this->assertDoesNotMatchRegularExpression('/curl\b[^\n]*\s(-v|--verbose|--trace)/', $ftpScript);
+            $this->assertDoesNotMatchRegularExpression('/echo\s+.*(\$FTP_PASSWORD|\$FTP_USERNAME|\$DEPLOY_TOKEN)/', $ftpScript);
+            $this->assertStringContainsString('chmod 600 "$CURL_CFG"', $ftpScript);
+            $this->assertStringContainsString('trap \'rm -f "$CURL_CFG"', $ftpScript);
+            $this->assertStringContainsString('set -euo pipefail', $ftpScript);
+        }
+
+        $this->assertDoesNotMatchRegularExpression('/echo\s+.*\$DEPLOY_TOKEN/', $verifyRun . "\n" . $stage3Run);
+
+        // Uji logika normalisasi host FTP & escaping kredensial di curl config terhadap karakter khusus
+        $normalizeHost = static function (string $raw): ?string {
+            $raw = trim($raw);
+            $raw = preg_replace('#^ftps?://#i', '', $raw) ?? '';
+            $raw = rtrim($raw, '/');
+            if ($raw === '' || preg_match('/[\s\/\\\\@#]/', $raw)) {
+                return null;
+            }
+            return $raw;
+        };
+
+        $this->assertSame('ftp.ahmad-rapi.web.id', $normalizeHost('ftp://ftp.ahmad-rapi.web.id/'));
+        $this->assertSame('ahmad-rapi.web.id:21', $normalizeHost('  ahmad-rapi.web.id:21  '));
+        $this->assertNull($normalizeHost(''));
+        $this->assertNull($normalizeHost('user:pass@ahmad-rapi.web.id'));
+        $this->assertNull($normalizeHost('ahmad-rapi.web.id/subdir'));
+
+        $formatCurlUserConfig = static function (string $user, string $pass): string {
+            $cred = str_replace(["\\", "\"", "\r", "\n"], ["\\\\", "\\\"", "", ""], $user . ':' . $pass);
+            return 'user = "' . $cred . "\"\n";
+        };
+
+        $formatted = $formatCurlUserConfig('deploy@ahmad-rapi.web.id', 'P@ss"w\\ord:123!');
+        $this->assertSame('user = "deploy@ahmad-rapi.web.id:P@ss\\"w\\\\ord:123!"' . "\n", $formatted);
     }
 }
 

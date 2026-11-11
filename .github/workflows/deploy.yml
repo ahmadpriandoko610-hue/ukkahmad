@@ -126,6 +126,10 @@ jobs:
                       // Pengabaian aman exception pada cleanup
                   }
               }
+              $legacySyncStateFile = dirname($selfFile) . '/.ftp-deploy-sync-state.json';
+              if (basename($legacySyncStateFile) === '.ftp-deploy-sync-state.json' && is_file($legacySyncStateFile) && !is_link($legacySyncStateFile) && is_writable($legacySyncStateFile)) {
+                  unlink($legacySyncStateFile);
+              }
               if (file_exists($selfFile)) {
                   unlink($selfFile);
               }
@@ -1820,7 +1824,17 @@ jobs:
                               }
                           }
                       }
-                      $ukkSuccess = $restoreExactDirectory($ukkRapiBackup, $ukkRapiTarget, $ukkRapiTarget, $ukkManifest);
+                      $ukkExcluded = ['storage', '.env'];
+                      $ukkRootScan = is_dir($ukkRapiTarget) ? scandir($ukkRapiTarget) : false;
+                      if (is_array($ukkRootScan)) {
+                          foreach ($ukkRootScan as $ukkRootEntry) {
+                              if ($ukkRootEntry === '.env' || (str_starts_with($ukkRootEntry, '.env.') && $ukkRootEntry !== '.env.example')) {
+                                  $ukkExcluded[] = $ukkRootEntry;
+                              }
+                          }
+                      }
+                      $ukkExcluded = array_values(array_unique($ukkExcluded));
+                      $ukkSuccess = $restoreExactDirectory($ukkRapiBackup, $ukkRapiTarget, $ukkRapiTarget, $ukkManifest, '', $ukkExcluded);
                       if (!$ukkSuccess) {
                           $allOk = false;
                           $rollbackErrors[] = "Pemulihan wajib direktori ukk_rapi gagal";
@@ -2663,21 +2677,119 @@ jobs:
           echo "STAGING_SHIELD_PROBE_ACTIVE" > "ftp_stage1_shield/.deploy_staging/${PROBE_FILENAME}"
           cp deploy_package/public_html/auto_extract.php ftp_stage1_shield/
 
-          # 10. Tahap 2: Folder payload (Menyertakan auto_extract.php & .htaccess agar TIDAK dihapus oleh sinkronisasi FTP)
+          # 10. Tahap 2: Folder payload (Menyertakan auto_extract.php & .htaccess untuk upload FTP stateless)
           mkdir -p ftp_stage2_payload/.deploy_staging
           cp ftp_stage1_shield/.deploy_staging/.htaccess ftp_stage2_payload/.deploy_staging/
           cp deploy_package/public_html/auto_extract.php ftp_stage2_payload/
           mv deploy_payload.zip ftp_stage2_payload/.deploy_staging/
 
       - name: "🛡️ Stage 1: Upload Protection Shield via FTP"
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftp
-          local-dir: ./ftp_stage1_shield/
-          server-dir: public_html/
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FTP_SERVER:-}" ] || [ -z "${FTP_USERNAME:-}" ] || [ -z "${FTP_PASSWORD:-}" ]; then
+            echo "::error::Secret FTP_SERVER, FTP_USERNAME, atau FTP_PASSWORD belum diset di GitHub Repository Secrets."
+            exit 1
+          fi
+
+          if [ -z "${PROBE_FILENAME:-}" ]; then
+            echo "::error::Variabel PROBE_FILENAME tidak ditemukan pada environment runner."
+            exit 1
+          fi
+
+          HTACCESS_FILE="ftp_stage1_shield/.deploy_staging/.htaccess"
+          PROBE_FILE="ftp_stage1_shield/.deploy_staging/${PROBE_FILENAME}"
+          EXTRACTOR_FILE="ftp_stage1_shield/auto_extract.php"
+
+          if [ ! -f "$HTACCESS_FILE" ] || [ ! -f "$PROBE_FILE" ] || [ ! -f "$EXTRACTOR_FILE" ]; then
+            echo "::error::Berkas staging Stage 1 tidak lengkap di runner."
+            exit 1
+          fi
+
+          FTP_HOST=$(php -r '
+            $raw = trim((string) getenv("FTP_SERVER"));
+            $raw = preg_replace("#^ftps?://#i", "", $raw);
+            $raw = rtrim($raw, "/");
+            if ($raw === "" || preg_match("/[\s\/\\\\@#]/", $raw)) {
+              fwrite(STDERR, "Format FTP_SERVER tidak valid.\n");
+              exit(1);
+            }
+            echo $raw;
+          ')
+
+          CURL_CFG=$(mktemp)
+          CURL_ERR=$(mktemp)
+          chmod 600 "$CURL_CFG" "$CURL_ERR"
+          trap 'rm -f "$CURL_CFG" "$CURL_ERR"' EXIT
+
+          export CURL_CFG
+          php -r '
+            $cfg = getenv("CURL_CFG");
+            $user = (string) getenv("FTP_USERNAME");
+            $pass = (string) getenv("FTP_PASSWORD");
+            $cred = str_replace(["\\", "\"", "\r", "\n"], ["\\\\", "\\\"", "", ""], $user . ":" . $pass);
+            if (file_put_contents($cfg, "user = \"" . $cred . "\"\n") === false) {
+              exit(1);
+            }
+          '
+
+          # 1. Bersihkan sisa file state lama .ftp-deploy-sync-state.json secara spesifik tanpa menyentuh file produksi lain
+          set +e
+          curl --silent --show-error --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 30 \
+            --ftp-pasv \
+            --head \
+            "ftp://${FTP_HOST}/public_html/.ftp-deploy-sync-state.json" \
+            > /dev/null 2> "$CURL_ERR"
+          STATE_CHECK_RC=$?
+          set -e
+
+          if [ "$STATE_CHECK_RC" -eq 0 ]; then
+            echo "Membersihkan sisa state lama public_html/.ftp-deploy-sync-state.json secara spesifik..."
+            curl --silent --show-error --fail --config "$CURL_CFG" \
+              --connect-timeout 20 --max-time 30 \
+              --ftp-pasv \
+              --quote "-DELE .ftp-deploy-sync-state.json" \
+              "ftp://${FTP_HOST}/public_html/" \
+              -o /dev/null
+            echo "✅ Sisa .ftp-deploy-sync-state.json berhasil dibersihkan."
+          elif [ "$STATE_CHECK_RC" -ne 9 ] && [ "$STATE_CHECK_RC" -ne 19 ] && [ "$STATE_CHECK_RC" -ne 78 ]; then
+            echo "::error::Gagal memeriksa konektivitas FTP sebelum Stage 1 (kode curl: ${STATE_CHECK_RC})."
+            cat "$CURL_ERR" >&2 || true
+            exit 1
+          fi
+
+          # 2. Buat otomatis direktori .deploy_staging dan upload .htaccess pelindung terlebih dahulu
+          echo "Membuat/memastikan direktori public_html/.deploy_staging dan mengunggah .htaccess pelindung..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 60 \
+            --ftp-pasv \
+            --ftp-create-dirs \
+            --upload-file "$HTACCESS_FILE" \
+            "ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess"
+
+          # 3. Upload berkas probe unik ke dalam public_html/.deploy_staging/
+          echo "Mengunggah berkas probe ke public_html/.deploy_staging/${PROBE_FILENAME}..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 60 \
+            --ftp-pasv \
+            --ftp-create-dirs \
+            --upload-file "$PROBE_FILE" \
+            "ftp://${FTP_HOST}/public_html/.deploy_staging/${PROBE_FILENAME}"
+
+          # 4. Upload auto_extract.php ke root public_html/ (bukan di dalam .deploy_staging)
+          echo "Mengunggah auto_extract.php ke public_html/auto_extract.php..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 60 \
+            --ftp-pasv \
+            --upload-file "$EXTRACTOR_FILE" \
+            "ftp://${FTP_HOST}/public_html/auto_extract.php"
+
+          echo "✅ Stage 1 FTP stateless selesai."
 
       - name: "🔍 Verify Staging Shield Active (HTTP 403 on Probe File)"
         run: |
@@ -2708,14 +2820,80 @@ jobs:
           echo "✅ Proteksi shield .deploy_staging terverifikasi aktif (HTTP 403 Forbidden pada akses berkas langsung)."
 
       - name: "📦 Stage 2: Upload Payload ZIP via FTP"
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftp
-          local-dir: ./ftp_stage2_payload/
-          server-dir: public_html/
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FTP_SERVER:-}" ] || [ -z "${FTP_USERNAME:-}" ] || [ -z "${FTP_PASSWORD:-}" ]; then
+            echo "::error::Secret FTP_SERVER, FTP_USERNAME, atau FTP_PASSWORD belum diset di GitHub Repository Secrets."
+            exit 1
+          fi
+
+          HTACCESS_FILE="ftp_stage2_payload/.deploy_staging/.htaccess"
+          PAYLOAD_FILE="ftp_stage2_payload/.deploy_staging/deploy_payload.zip"
+          EXTRACTOR_FILE="ftp_stage2_payload/auto_extract.php"
+
+          if [ ! -f "$HTACCESS_FILE" ] || [ ! -f "$PAYLOAD_FILE" ] || [ ! -f "$EXTRACTOR_FILE" ]; then
+            echo "::error::Berkas payload Stage 2 tidak lengkap di runner."
+            exit 1
+          fi
+
+          FTP_HOST=$(php -r '
+            $raw = trim((string) getenv("FTP_SERVER"));
+            $raw = preg_replace("#^ftps?://#i", "", $raw);
+            $raw = rtrim($raw, "/");
+            if ($raw === "" || preg_match("/[\s\/\\\\@#]/", $raw)) {
+              fwrite(STDERR, "Format FTP_SERVER tidak valid.\n");
+              exit(1);
+            }
+            echo $raw;
+          ')
+
+          CURL_CFG=$(mktemp)
+          chmod 600 "$CURL_CFG"
+          trap 'rm -f "$CURL_CFG"' EXIT
+
+          export CURL_CFG
+          php -r '
+            $cfg = getenv("CURL_CFG");
+            $user = (string) getenv("FTP_USERNAME");
+            $pass = (string) getenv("FTP_PASSWORD");
+            $cred = str_replace(["\\", "\"", "\r", "\n"], ["\\\\", "\\\"", "", ""], $user . ":" . $pass);
+            if (file_put_contents($cfg, "user = \"" . $cred . "\"\n") === false) {
+              exit(1);
+            }
+          '
+
+          # 1. Pastikan pelindung .htaccess tetap aktif di public_html/.deploy_staging/.htaccess
+          echo "Memastikan public_html/.deploy_staging/.htaccess pelindung terpasang..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 60 \
+            --ftp-pasv \
+            --ftp-create-dirs \
+            --upload-file "$HTACCESS_FILE" \
+            "ftp://${FTP_HOST}/public_html/.deploy_staging/.htaccess"
+
+          # 2. Upload deploy_payload.zip terenkripsi ke dalam public_html/.deploy_staging/
+          echo "Mengunggah payload ZIP terenkripsi ke public_html/.deploy_staging/deploy_payload.zip..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 30 --max-time 300 \
+            --ftp-pasv \
+            --ftp-create-dirs \
+            --upload-file "$PAYLOAD_FILE" \
+            "ftp://${FTP_HOST}/public_html/.deploy_staging/deploy_payload.zip"
+
+          # 3. Pastikan auto_extract.php siap dieksekusi di public_html/auto_extract.php
+          echo "Memastikan public_html/auto_extract.php tersedia di root public_html/..."
+          curl --silent --show-error --fail --config "$CURL_CFG" \
+            --connect-timeout 20 --max-time 60 \
+            --ftp-pasv \
+            --upload-file "$EXTRACTOR_FILE" \
+            "ftp://${FTP_HOST}/public_html/auto_extract.php"
+
+          echo "✅ Stage 2 FTP stateless selesai (payload ZIP terlindungi di .deploy_staging)."
 
       - name: "⚡ Stage 3: Trigger Secure Extraction on cPanel"
         env:
