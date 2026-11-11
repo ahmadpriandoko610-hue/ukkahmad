@@ -110,20 +110,22 @@
                         Edit
                     </a>
 
-                    <form action="{{ route('users.destroy', $user->id) }}"
-                          method="POST"
-                          class="room-delete-form">
+                    @if($user->rooms->isEmpty())
+                        <form action="{{ route('users.destroy', $user->id) }}"
+                              method="POST"
+                              class="room-delete-form">
 
-                        @csrf
-                        @method('DELETE')
+                            @csrf
+                            @method('DELETE')
 
-                        <button type="submit"
-                                class="btn btn-delete"
-                                onclick="return confirm('Yakin ingin menghapus user ini?')">
-                            Hapus
-                        </button>
+                            <button type="submit"
+                                    class="btn btn-delete"
+                                    onclick="return confirm('Yakin ingin menghapus user ini?')">
+                                Hapus
+                            </button>
 
-                    </form>
+                        </form>
+                    @endif
                 </div>
 
             </td>
