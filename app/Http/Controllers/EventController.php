@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Event;
 use App\Models\Room;
 use App\Models\ScheduleNotification;
+use App\Services\RoomMoveWhatsAppService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -48,7 +49,9 @@ class EventController extends Controller
             'query' => $request->query(),
         ]);
 
-        return view('admin.event.index', compact('agenda', 'filters'));
+        $roomMoveWhatsapp = $this->roomMoveWhatsAppService()->resolveForView($request);
+
+        return view('admin.event.index', compact('agenda', 'filters', 'roomMoveWhatsapp'));
     }
 
     /** Laporan agenda admin berdasarkan periode harian, mingguan, atau bulanan. */
@@ -309,9 +312,11 @@ class EventController extends Controller
             'approver',
         ]);
 
+        $roomMoveWhatsapp = $this->roomMoveWhatsAppService()->resolveForView(request(), $event);
+
         return view(
             'admin.event.show',
-            compact('event')
+            compact('event', 'roomMoveWhatsapp')
         );
     }
 
@@ -329,10 +334,11 @@ class EventController extends Controller
         $agenda = $event;
 
         $ruangan = Room::sortRooms(Room::all());
+        $roomMoveWhatsapp = $this->roomMoveWhatsAppService()->resolveForView(request(), $event);
 
         return view(
             'admin.event.edit',
-            compact('agenda', 'ruangan')
+            compact('agenda', 'ruangan', 'roomMoveWhatsapp')
         );
     }
 
@@ -346,6 +352,8 @@ class EventController extends Controller
         Event $event
     ) {
         if ($event->status === 'Ditolak') {
+            $this->roomMoveWhatsAppService()->clear($request, (int) $event->id);
+
             return redirect()->route('agenda.index')->with('error', 'Agenda yang ditolak tidak dapat diedit.');
         }
 
@@ -388,6 +396,10 @@ class EventController extends Controller
         $outcome = [
             'updated' => false,
             'room_changed' => false,
+            'event_id' => null,
+            'old_room_id' => null,
+            'old_room_name' => '',
+            'new_room_id' => null,
             'error_field' => 'ruangan_id',
             'error_message' => null,
             'redirect_error' => null,
@@ -474,6 +486,7 @@ class EventController extends Controller
             }
 
             $oldRoom = Room::find($currentRoomId);
+            $oldRoomName = trim((string) ($oldRoom?->room_name ?? ''));
             $resolvedMoveReason = $requestedMoveReason !== ''
                 ? $requestedMoveReason
                 : 'Penyesuaian jadwal dan penggunaan ruangan oleh Admin.';
@@ -490,7 +503,7 @@ class EventController extends Controller
                     'Agenda "' . $lockedEvent->event_name . '" tanggal ' .
                     $lockedEvent->formatted_date_range .
                     ' dipindahkan dari ' .
-                    ($oldRoom?->room_name ?? 'ruangan sebelumnya') .
+                    ($oldRoomName !== '' ? $oldRoomName : 'ruangan sebelumnya') .
                     ' ke ' .
                     $room->room_name .
                     '. Alasan: ' .
@@ -499,9 +512,15 @@ class EventController extends Controller
 
             $outcome['updated'] = true;
             $outcome['room_changed'] = true;
+            $outcome['event_id'] = (int) $lockedEvent->id;
+            $outcome['old_room_id'] = $currentRoomId;
+            $outcome['old_room_name'] = $oldRoomName;
+            $outcome['new_room_id'] = (int) $room->id;
         });
 
         if ($outcome['redirect_error'] !== null) {
+            $this->roomMoveWhatsAppService()->clear($request, (int) $event->id);
+
             return redirect()->route('agenda.index')->with('error', $outcome['redirect_error']);
         }
 
@@ -511,6 +530,19 @@ class EventController extends Controller
                 ->withErrors([
                     $outcome['error_field'] => $outcome['error_message'] ?? 'Agenda gagal diperbarui.',
                 ]);
+        }
+
+        if ($outcome['room_changed'] && $outcome['event_id'] !== null && $outcome['new_room_id'] !== null) {
+            $this->roomMoveWhatsAppService()->rememberRoomMove(
+                $request,
+                $outcome['event_id'],
+                $outcome['old_room_id'],
+                $outcome['old_room_name'],
+                $outcome['new_room_id']
+            );
+        } else {
+            // Hanya bersihkan konteks agenda ini agar notifikasi agenda lain tidak terhapus.
+            $this->roomMoveWhatsAppService()->clear($request, (int) $event->id);
         }
 
         $successMessage = $outcome['room_changed']
@@ -700,11 +732,18 @@ class EventController extends Controller
             $sisters = collect([$event]);
         }
 
+        $deletedIds = $sisters->pluck('id')->push($event->id)->map(fn ($id) => (int) $id)->unique()->all();
+
         DB::transaction(function () use ($sisters) {
             foreach ($sisters as $sister) {
                 $sister->delete();
             }
         });
+
+        $whatsAppService = $this->roomMoveWhatsAppService();
+        foreach ($deletedIds as $deletedId) {
+            $whatsAppService->clear(request(), (int) $deletedId);
+        }
 
         return redirect()
             ->route('agenda.index')
@@ -1142,11 +1181,14 @@ public function picCalendar()
                 ->get()
         );
 
+        $roomMoveWhatsapp = $this->roomMoveWhatsAppService()->resolveForView(request(), $event);
+
         return view(
             'admin.event.move',
             compact(
                 'event',
-                'rooms'
+                'rooms',
+                'roomMoveWhatsapp'
             )
         );
     }
@@ -1161,6 +1203,8 @@ public function picCalendar()
         Event $event
     ) {
         if ($event->status !== 'Disetujui') {
+            $this->roomMoveWhatsAppService()->clear($request, (int) $event->id);
+
             return redirect()->route('agenda.index')->with('error', 'Hanya agenda yang sudah disetujui yang dapat dipindahkan.');
         }
 
@@ -1198,6 +1242,10 @@ public function picCalendar()
 
         $outcome = [
             'moved' => false,
+            'event_id' => null,
+            'old_room_id' => null,
+            'old_room_name' => '',
+            'new_room_id' => null,
             'error_field' => 'room_id',
             'error_message' => null,
             'redirect_error' => null,
@@ -1268,7 +1316,8 @@ public function picCalendar()
             }
 
             $oldRoom = Room::find($currentRoomId);
-            $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
+            $rawOldRoomName = trim((string) ($oldRoom?->room_name ?? ''));
+            $oldRoomName = $rawOldRoomName !== '' ? $rawOldRoomName : 'ruangan sebelumnya';
 
             $lockedEvent->update([
                 'room_id' => $room->id,
@@ -1291,9 +1340,15 @@ public function picCalendar()
             ]);
 
             $outcome['moved'] = true;
+            $outcome['event_id'] = (int) $lockedEvent->id;
+            $outcome['old_room_id'] = $currentRoomId;
+            $outcome['old_room_name'] = $rawOldRoomName;
+            $outcome['new_room_id'] = (int) $room->id;
         });
 
         if ($outcome['redirect_error'] !== null) {
+            $this->roomMoveWhatsAppService()->clear($request, (int) $event->id);
+
             return redirect()
                 ->route('agenda.index')
                 ->with('error', $outcome['redirect_error']);
@@ -1307,9 +1362,55 @@ public function picCalendar()
                 ]);
         }
 
+        if ($outcome['event_id'] !== null && $outcome['new_room_id'] !== null) {
+            $this->roomMoveWhatsAppService()->rememberRoomMove(
+                $request,
+                $outcome['event_id'],
+                $outcome['old_room_id'],
+                $outcome['old_room_name'],
+                $outcome['new_room_id']
+            );
+        }
+
         return redirect()
             ->route('agenda.index')
             ->with('success', 'Ruangan agenda berhasil dipindahkan.');
+    }
+
+    /**
+     * Membuka tautan WhatsApp (wa.me) untuk pemberitahuan pemindahan ruangan kepada Guru pemilik agenda.
+     */
+    public function sendRoomMoveWhatsApp(Request $request, Event $event)
+    {
+        $result = $this->roomMoveWhatsAppService()->resolveRedirectUrl($request, $event);
+
+        if (!$result['ok'] || empty($result['url'])) {
+            return redirect()
+                ->route('agenda.index')
+                ->with('error', $result['error'] ?? 'Tautan WhatsApp belum tersedia.');
+        }
+
+        return redirect()->away($result['url']);
+    }
+
+    /**
+     * Menutup panel pemberitahuan WhatsApp pemindahan ruangan di sesi Admin saat ini.
+     */
+    public function dismissRoomMoveWhatsApp(Request $request)
+    {
+        $rawEventId = $request->input('event_id');
+        $eventId = is_numeric($rawEventId) && (int) $rawEventId > 0
+            ? (int) $rawEventId
+            : null;
+
+        $this->roomMoveWhatsAppService()->clear($request, $eventId);
+
+        return redirect()->route('agenda.index');
+    }
+
+    private function roomMoveWhatsAppService(): RoomMoveWhatsAppService
+    {
+        return new RoomMoveWhatsAppService();
     }
 
     /**

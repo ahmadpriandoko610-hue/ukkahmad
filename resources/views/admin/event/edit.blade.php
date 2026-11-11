@@ -46,6 +46,8 @@
     </div>
 @endif
 
+@includeWhen(!empty($roomMoveWhatsapp['available']), 'admin.event.partials.room-move-whatsapp-notice', ['roomMoveWhatsapp' => $roomMoveWhatsapp ?? null])
+
 
 <form action="{{ route('agenda.update', $agenda->id) }}" method="POST">
 

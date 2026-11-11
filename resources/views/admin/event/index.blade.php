@@ -63,6 +63,8 @@
 </div>
 @endif
 
+@includeWhen(!empty($roomMoveWhatsapp['available']), 'admin.event.partials.room-move-whatsapp-notice', ['roomMoveWhatsapp' => $roomMoveWhatsapp ?? null])
+
 
 <div class="page-action-bar">
 

@@ -209,6 +209,12 @@ Route::middleware(['auth', 'role:admin'])->group(function () {
     Route::put('/events/{event}/move', [EventController::class, 'move'])
         ->name('events.move');
 
+    Route::post('/events/{event}/whatsapp-notification', [EventController::class, 'sendRoomMoveWhatsApp'])
+        ->name('events.move.whatsapp');
+
+    Route::post('/events/whatsapp-notification/dismiss', [EventController::class, 'dismissRoomMoveWhatsApp'])
+        ->name('events.move.whatsapp.dismiss');
+
 
     /*
     |--------------------------------------------------------------------------

@@ -44,7 +44,7 @@ class UserWhatsAppRoleTest extends TestCase
         $this->assertDatabaseHas('users', [
             'email' => 'budi.pic@rapi.test',
             'role' => 'pic',
-            'phone' => '081234567890',
+            'phone' => '6281234567890',
         ]);
 
         $pic = User::where('email', 'budi.pic@rapi.test')->firstOrFail();
@@ -57,7 +57,7 @@ class UserWhatsAppRoleTest extends TestCase
         ]);
 
         $updateResponse->assertRedirect(route('users.index'));
-        $this->assertSame('089876543210', $pic->fresh()->phone);
+        $this->assertSame('6289876543210', $pic->fresh()->phone);
     }
 
     /**
@@ -95,9 +95,9 @@ class UserWhatsAppRoleTest extends TestCase
     }
 
     /**
-     * 3. Role Guru / Organisasi tidak dapat menyimpan nomor WhatsApp.
+     * 3. Role Guru / Organisasi dapat menyimpan dan memperbarui nomor WhatsApp serta menolak format tidak valid.
      */
-    public function test_guru_role_cannot_save_whatsapp_number(): void
+    public function test_guru_role_can_save_and_update_whatsapp_number(): void
     {
         $response = $this->actingAs($this->admin)->post(route('users.store'), [
             'name' => 'Guru Matematika',
@@ -108,24 +108,40 @@ class UserWhatsAppRoleTest extends TestCase
         ]);
 
         $response->assertRedirect(route('users.index'));
+        $response->assertSessionHas('success');
 
         $this->assertDatabaseHas('users', [
             'email' => 'guru.mtk@rapi.test',
             'role' => 'guru',
-            'phone' => null,
+            'phone' => '6281234567890',
         ]);
 
         $guru = User::where('email', 'guru.mtk@rapi.test')->firstOrFail();
-        $this->assertNull($guru->phone);
+        $this->assertSame('6281234567890', $guru->phone);
 
-        $this->actingAs($this->admin)->put(route('users.update', $guru), [
+        $updateResponse = $this->actingAs($this->admin)->put(route('users.update', $guru), [
             'name' => 'Guru Matematika Edit',
             'email' => 'guru.mtk@rapi.test',
             'role' => 'guru',
-            'phone' => '081288888888',
+            'phone' => '+62 812-8888-8888',
         ]);
 
-        $this->assertNull($guru->fresh()->phone);
+        $updateResponse->assertRedirect(route('users.index'));
+        $this->assertSame('6281288888888', $guru->fresh()->phone);
+        $this->assertSame('6281288888888', User::normalizeWhatsAppPhone($guru->fresh()->phone));
+
+        $invalidResponse = $this->actingAs($this->admin)
+            ->from(route('users.edit', $guru))
+            ->put(route('users.update', $guru), [
+                'name' => 'Guru Matematika Edit',
+                'email' => 'guru.mtk@rapi.test',
+                'role' => 'guru',
+                'phone' => 'bukan-nomor-08',
+            ]);
+
+        $invalidResponse->assertRedirect(route('users.edit', $guru));
+        $invalidResponse->assertSessionHasErrors('phone');
+        $this->assertSame('6281288888888', $guru->fresh()->phone);
     }
 
     /**
@@ -163,9 +179,9 @@ class UserWhatsAppRoleTest extends TestCase
     }
 
     /**
-     * 5. Mengubah role PIC menjadi non-PIC mengosongkan nomor WhatsApp.
+     * 5. Mengubah role PIC/Guru menjadi Admin atau Siswa mengosongkan nomor WhatsApp.
      */
-    public function test_changing_pic_role_to_non_pic_clears_whatsapp_number(): void
+    public function test_changing_pic_or_guru_role_to_admin_or_siswa_clears_whatsapp_number(): void
     {
         $picToGuru = User::factory()->create([
             'role' => 'pic',
@@ -181,7 +197,7 @@ class UserWhatsAppRoleTest extends TestCase
         ])->assertRedirect(route('users.index'));
 
         $this->assertSame('guru', $picToGuru->fresh()->role);
-        $this->assertNull($picToGuru->fresh()->phone);
+        $this->assertSame('6281234567890', $picToGuru->fresh()->phone);
 
         $picToAdmin = User::factory()->create([
             'role' => 'pic',
@@ -191,33 +207,35 @@ class UserWhatsAppRoleTest extends TestCase
             'name' => $picToAdmin->name,
             'email' => $picToAdmin->email,
             'role' => 'admin',
+            'phone' => '081233333333',
         ])->assertRedirect(route('users.index'));
 
         $this->assertSame('admin', $picToAdmin->fresh()->role);
         $this->assertNull($picToAdmin->fresh()->phone);
 
-        $picToSiswa = User::factory()->create([
-            'role' => 'pic',
+        $guruToSiswa = User::factory()->create([
+            'role' => 'guru',
             'phone' => '081244444444',
         ]);
-        $this->actingAs($this->admin)->put(route('users.update', $picToSiswa), [
-            'name' => $picToSiswa->name,
-            'email' => $picToSiswa->email,
+        $this->actingAs($this->admin)->put(route('users.update', $guruToSiswa), [
+            'name' => $guruToSiswa->name,
+            'email' => $guruToSiswa->email,
             'role' => 'siswa',
+            'phone' => '081244444444',
         ])->assertRedirect(route('users.index'));
 
-        $this->assertSame('siswa', $picToSiswa->fresh()->role);
-        $this->assertNull($picToSiswa->fresh()->phone);
+        $this->assertSame('siswa', $guruToSiswa->fresh()->role);
+        $this->assertNull($guruToSiswa->fresh()->phone);
     }
 
     /**
-     * 6. Halaman Tambah User dan Edit User menampilkan kondisi input khusus PIC tanpa fitur opt-in Guru.
+     * 6. Halaman Tambah User dan Edit User menampilkan kondisi input khusus Guru dan PIC tanpa fitur opt-in lama.
      */
     public function test_create_and_edit_user_page_displays_correct_input_condition(): void
     {
         $createResponse = $this->actingAs($this->admin)->get(route('users.create'));
         $createResponse->assertOk();
-        $createResponse->assertSee('placeholder="Khusus untuk PIC"', false);
+        $createResponse->assertSee('placeholder="Khusus untuk Guru / Organisasi atau PIC"', false);
         $createResponse->assertSee('disabled', false);
         $createResponse->assertDontSeeText('persetujuan penerimaan notifikasi pemindahan ruangan');
 
@@ -236,16 +254,17 @@ class UserWhatsAppRoleTest extends TestCase
             'role' => 'guru',
             'name' => 'Guru Biologi',
             'email' => 'guru.biologi@rapi.test',
+            'phone' => '081345678901',
         ]);
         $editGuruResponse = $this->actingAs($this->admin)->get(route('users.edit', $guruUser));
         $editGuruResponse->assertOk();
-        $editGuruResponse->assertSee('placeholder="Khusus untuk PIC"', false);
-        $editGuruResponse->assertSee('disabled', false);
+        $editGuruResponse->assertSee('value="081345678901"', false);
+        $editGuruResponse->assertSee('placeholder="Contoh: 081234567890"', false);
         $editGuruResponse->assertDontSeeText('Status Persetujuan Notifikasi WhatsApp Guru');
 
         $editAdminResponse = $this->actingAs($this->admin)->get(route('users.edit', $this->admin));
         $editAdminResponse->assertOk();
-        $editAdminResponse->assertSee('placeholder="Khusus untuk PIC"', false);
+        $editAdminResponse->assertSee('placeholder="Khusus untuk Guru / Organisasi atau PIC"', false);
         $editAdminResponse->assertSee('disabled', false);
 
         $usersIndex = $this->actingAs($this->admin)->get(route('users.index'));
@@ -255,26 +274,26 @@ class UserWhatsAppRoleTest extends TestCase
     }
 
     /**
-     * 7. Request langsung ke backend tidak dapat menyimpan phone untuk role non-PIC.
+     * 7. Request langsung ke backend tidak dapat menyimpan phone untuk role Admin atau Siswa.
      */
-    public function test_direct_http_request_cannot_bypass_whatsapp_rule_for_non_pic(): void
+    public function test_direct_http_request_cannot_bypass_whatsapp_rule_for_admin_or_siswa(): void
     {
         $this->actingAs($this->admin)->post(route('users.store'), [
-            'name' => 'Direct Request Guru',
-            'email' => 'direct.guru@rapi.test',
+            'name' => 'Direct Request Siswa',
+            'email' => 'direct.siswa@rapi.test',
             'password' => 'secret123',
-            'role' => 'guru',
+            'role' => 'siswa',
             'phone' => '081234567890',
         ]);
 
-        $created = User::where('email', 'direct.guru@rapi.test')->firstOrFail();
-        $this->assertSame('guru', $created->role);
+        $created = User::where('email', 'direct.siswa@rapi.test')->firstOrFail();
+        $this->assertSame('siswa', $created->role);
         $this->assertNull($created->phone);
 
         $this->actingAs($this->admin)->put(route('users.update', $created), [
-            'name' => 'Direct Request Guru Updated',
-            'email' => 'direct.guru@rapi.test',
-            'role' => 'guru',
+            'name' => 'Direct Request Siswa Updated',
+            'email' => 'direct.siswa@rapi.test',
+            'role' => 'siswa',
             'phone' => '081999999999',
         ]);
 
@@ -326,5 +345,143 @@ class UserWhatsAppRoleTest extends TestCase
         $targetUrl = (string) $waResponse->headers->get('Location');
         $this->assertStringStartsWith('https://wa.me/6281234567890?text=', $targetUrl);
         $this->assertStringContainsString(rawurlencode('Bengkel RPL'), $targetUrl);
+    }
+
+    /**
+     * 9. Penyimpanan ternormalisasi 628xxxxxxxxxx menjamin aman terhadap VARCHAR(20) dan kompatibel dengan edit & pengaduan PIC.
+     */
+    public function test_phone_normalization_handles_all_formats_respects_varchar20_and_works_on_edit_and_pic_complaints(): void
+    {
+        $validFormats = [
+            '08' => ['input' => '081234567890', 'expected' => '6281234567890'],
+            '+628' => ['input' => '+6281398765432', 'expected' => '6281398765432'],
+            '628' => ['input' => '6285712345678', 'expected' => '6285712345678'],
+            'spaces_and_punctuation_21_chars' => [
+                'input' => '+62 (812) 3456-7890-1',
+                'expected' => '62812345678901',
+            ],
+            'dots_and_hyphens' => [
+                'input' => '0812.3456-7890',
+                'expected' => '6281234567890',
+            ],
+        ];
+
+        foreach ($validFormats as $key => $case) {
+            $email = "guru.{$key}@rapi.test";
+            $this->actingAs($this->admin)->post(route('users.store'), [
+                'name' => "Guru {$key}",
+                'email' => $email,
+                'password' => 'password123',
+                'role' => 'guru',
+                'phone' => $case['input'],
+            ])->assertRedirect(route('users.index'));
+
+            $user = User::where('email', $email)->firstOrFail();
+            $this->assertSame($case['expected'], $user->phone);
+            $this->assertLessThanOrEqual(20, strlen((string) $user->phone));
+
+            // Nomor ternormalisasi tampil benar di form edit & dapat disimpan kembali tanpa error
+            $editResponse = $this->actingAs($this->admin)->get(route('users.edit', $user));
+            $editResponse->assertOk();
+            $editResponse->assertSee('value="' . $case['expected'] . '"', false);
+
+            $this->actingAs($this->admin)->put(route('users.update', $user), [
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => 'guru',
+                'phone' => $user->phone,
+            ])->assertRedirect(route('users.index'));
+
+            $this->assertSame($case['expected'], $user->fresh()->phone);
+        }
+
+        // Nomor kosong -> tersimpan null
+        $this->actingAs($this->admin)->post(route('users.store'), [
+            'name' => 'Guru Tanpa Nomor',
+            'email' => 'guru.kosong@rapi.test',
+            'password' => 'password123',
+            'role' => 'guru',
+            'phone' => '   ',
+        ])->assertRedirect(route('users.index'));
+
+        $emptyPhoneUser = User::where('email', 'guru.kosong@rapi.test')->firstOrFail();
+        $this->assertNull($emptyPhoneUser->phone);
+
+        // Nomor terlalu panjang (>25 karakter raw maupun >15 digit saat normalisasi) & nomor tidak valid wajib ditolak
+        $invalidNumbers = [
+            'too_long_raw' => '+62 (812) 3456-7890-123456',
+            'too_long_digits' => '08123456789012345',
+            'too_long_62_digits' => '6281234567890123456',
+            'too_short' => '08123',
+            'landline' => '0215551234',
+            'plus620' => '+6208123456789',
+            'alpha' => '0812abcd7890',
+        ];
+
+        foreach ($invalidNumbers as $label => $badPhone) {
+            $failStore = $this->actingAs($this->admin)
+                ->from(route('users.create'))
+                ->post(route('users.store'), [
+                    'name' => "Invalid {$label}",
+                    'email' => "invalid.{$label}@rapi.test",
+                    'password' => 'password123',
+                    'role' => 'guru',
+                    'phone' => $badPhone,
+                ]);
+
+            $failStore->assertRedirect(route('users.create'));
+            $failStore->assertSessionHasErrors('phone');
+            $this->assertDatabaseMissing('users', ['email' => "invalid.{$label}@rapi.test"]);
+
+            $failUpdate = $this->actingAs($this->admin)
+                ->from(route('users.edit', $emptyPhoneUser))
+                ->put(route('users.update', $emptyPhoneUser), [
+                    'name' => $emptyPhoneUser->name,
+                    'email' => $emptyPhoneUser->email,
+                    'role' => 'guru',
+                    'phone' => $badPhone,
+                ]);
+
+            $failUpdate->assertRedirect(route('users.edit', $emptyPhoneUser));
+            $failUpdate->assertSessionHasErrors('phone');
+            $this->assertNull($emptyPhoneUser->fresh()->phone);
+        }
+
+        // Kompatibilitas nomor PIC pengaduan setelah normalisasi server (input berformat spasi/tanda baca -> tersimpan 628...)
+        $this->actingAs($this->admin)->post(route('users.store'), [
+            'name' => 'PIC Lab Normalized',
+            'email' => 'pic.normalized@rapi.test',
+            'password' => 'password123',
+            'role' => 'pic',
+            'phone' => '+62 812-9876-5432-1',
+        ])->assertRedirect(route('users.index'));
+
+        $normalizedPic = User::where('email', 'pic.normalized@rapi.test')->firstOrFail();
+        $this->assertSame('62812987654321', $normalizedPic->phone);
+        $this->assertLessThanOrEqual(20, strlen((string) $normalizedPic->phone));
+
+        $reporter = User::factory()->create(['role' => 'guru']);
+        $room = Room::create([
+            'room_name' => 'Lab Multimedia',
+            'location' => 'Gedung E',
+            'capacity' => 32,
+            'pic_id' => $normalizedPic->id,
+            'is_active' => true,
+        ]);
+
+        $complaint = Complaint::create([
+            'room_id' => $room->id,
+            'reporter_id' => $reporter->id,
+            'description' => 'Proyektor tidak menyala.',
+            'status_repair' => 'Belum Diperbaiki',
+            'reported_at' => now(),
+        ]);
+
+        $waPicResponse = $this->actingAs($this->admin)->post(route('complaint.whatsapp', $complaint));
+        $waPicResponse->assertRedirect();
+        $this->assertStringStartsWith(
+            'https://wa.me/62812987654321?text=',
+            (string) $waPicResponse->headers->get('Location')
+        );
     }
 }

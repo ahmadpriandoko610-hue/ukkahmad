@@ -44,7 +44,7 @@
     </div>
 
     @php
-        $isPic = old('role', $user->role) === 'pic';
+        $canHaveWhatsApp = in_array(old('role', $user->role), ['guru', 'pic'], true);
     @endphp
 
     <div class="form-group">
@@ -54,12 +54,13 @@
             name="phone"
             id="phone"
             class="form-control"
-            value="{{ $isPic ? old('phone', $user->phone) : '' }}"
-            placeholder="{{ $isPic ? 'Contoh: 081234567890' : 'Khusus untuk PIC' }}"
-            {{ $isPic ? '' : 'disabled' }}
-            style="{{ $isPic ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
+            maxlength="25"
+            value="{{ $canHaveWhatsApp ? old('phone', $user->phone) : '' }}"
+            placeholder="{{ $canHaveWhatsApp ? 'Contoh: 081234567890' : 'Khusus untuk Guru / Organisasi atau PIC' }}"
+            {{ $canHaveWhatsApp ? '' : 'disabled' }}
+            style="{{ $canHaveWhatsApp ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
         >
-        <small id="phoneHelp">{{ $isPic ? 'Diisi khususnya untuk user dengan role PIC.' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.' }}</small>
+        <small id="phoneHelp">{{ $canHaveWhatsApp ? 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 628..., atau +628..., otomatis dinormalisasi ke 628...).' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.' }}</small>
         @error('phone')
             <small class="form-error">{{ $message }}</small>
         @enderror
@@ -140,9 +141,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (roleSelect && phoneInput) {
         function updateWhatsAppField() {
-            const isPic = roleSelect.value === 'pic';
+            const canHaveWhatsApp = roleSelect.value === 'pic' || roleSelect.value === 'guru';
 
-            if (isPic) {
+            if (canHaveWhatsApp) {
                 phoneInput.disabled = false;
                 phoneInput.readOnly = false;
                 phoneInput.placeholder = 'Contoh: 081234567890';
@@ -150,18 +151,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 phoneInput.style.cursor = '';
                 phoneInput.style.color = '';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Diisi khususnya untuk user dengan role PIC.';
+                    phoneHelp.textContent = 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 628..., atau +628..., otomatis dinormalisasi ke 628...).';
                 }
             } else {
                 phoneInput.value = '';
                 phoneInput.disabled = true;
                 phoneInput.readOnly = true;
-                phoneInput.placeholder = 'Khusus untuk PIC';
+                phoneInput.placeholder = 'Khusus untuk Guru / Organisasi atau PIC';
                 phoneInput.style.backgroundColor = '#f1f5f9';
                 phoneInput.style.cursor = 'not-allowed';
                 phoneInput.style.color = '#94a3b8';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.';
+                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.';
                 }
             }
         }
@@ -169,13 +170,13 @@ document.addEventListener('DOMContentLoaded', function () {
         roleSelect.addEventListener('change', updateWhatsAppField);
 
         phoneInput.addEventListener('keydown', function (e) {
-            if (roleSelect.value !== 'pic') {
+            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
                 e.preventDefault();
             }
         });
 
         phoneInput.addEventListener('paste', function (e) {
-            if (roleSelect.value !== 'pic') {
+            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
                 e.preventDefault();
             }
         });

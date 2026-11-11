@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Complaint;
 use App\Models\Event;
 use App\Models\Room;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Carbon;
@@ -527,23 +528,14 @@ public function whatsappWarning(Complaint $complaint)
         ]);
     }
 
-    // Ambil nomor HP PIC
-    $phone = preg_replace(
-        '/\D+/',
-        '',
-        (string) $pic->phone
-    );
+    // Normalisasi dan validasi nomor HP PIC menggunakan fungsi bersama pada model User
+    $phone = User::normalizeWhatsAppPhone($pic->phone);
 
     if (!$phone) {
         return back()->withErrors([
             'warning' =>
                 'Nomor WhatsApp PIC ruangan belum tersedia.',
         ]);
-    }
-
-    // Ubah nomor 08xxx menjadi 628xxx
-    if (str_starts_with($phone, '0')) {
-        $phone = '62' . substr($phone, 1);
     }
 
     $roomName =

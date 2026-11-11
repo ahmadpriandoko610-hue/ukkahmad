@@ -81,6 +81,8 @@
         <p class="detail-description">{{ $event->description ?: '-' }}</p>
     </div>
 
+    @includeWhen(!empty($roomMoveWhatsapp['available']), 'admin.event.partials.room-move-whatsapp-notice', ['roomMoveWhatsapp' => $roomMoveWhatsapp ?? null])
+
     @if($event->move_reason)
         <div class="alert-warning" style="margin-top: 16px;">
             <strong>Alasan Pemindahan Ruangan:</strong><br>

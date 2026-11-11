@@ -277,7 +277,7 @@ class UserPicDeletionProtectionTest extends TestCase
             ->assertSessionHas('success');
 
         $this->assertSame('Hendra PIC Baru', $pic->fresh()->name);
-        $this->assertSame('081299990000', $pic->fresh()->phone);
+        $this->assertSame('6281299990000', $pic->fresh()->phone);
 
         // Mengubah role menjadi guru saat masih memegang Bengkel TKJ harus ditolak
         $blockedRoleChange = $this->actingAs($this->admin)
@@ -292,7 +292,7 @@ class UserPicDeletionProtectionTest extends TestCase
         $blockedRoleChange->assertSessionHasErrors('role');
 
         $this->assertSame('pic', $pic->fresh()->role);
-        $this->assertSame('081299990000', $pic->fresh()->phone);
+        $this->assertSame('6281299990000', $pic->fresh()->phone);
 
         // Lepaskan PIC dari ruangan -> sekarang role boleh diubah
         $room->update(['pic_id' => null]);

@@ -30,6 +30,8 @@
     </div>
 @endif
 
+@includeWhen(!empty($roomMoveWhatsapp['available']), 'admin.event.partials.room-move-whatsapp-notice', ['roomMoveWhatsapp' => $roomMoveWhatsapp ?? null])
+
 <form action="{{ route('events.move', $event) }}" method="POST">
     @csrf
     @method('PUT')

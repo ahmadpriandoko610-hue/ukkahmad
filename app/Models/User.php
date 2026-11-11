@@ -50,13 +50,79 @@ class User extends Authenticatable
     }
 
     /**
+     * Daftar role yang dapat menyimpan nomor WhatsApp di kolom users.phone.
+     *
+     * @var array<int, string>
+     */
+    public const WHATSAPP_ENABLED_ROLES = ['guru', 'pic'];
+
+    /**
+     * Cek apakah role berhak menyimpan nomor WhatsApp.
+     */
+    public static function canHaveWhatsAppPhone(?string $role): bool
+    {
+        return in_array($role, self::WHATSAPP_ENABLED_ROLES, true);
+    }
+
+    /**
+     * Normalisasi dan validasi nomor WhatsApp Indonesia ke format wa.me (628...).
+     * Mengembalikan null apabila nomor kosong atau tidak valid.
+     */
+    public static function normalizeWhatsAppPhone(?string $phone): ?string
+    {
+        if ($phone === null) {
+            return null;
+        }
+
+        $trimmed = trim($phone);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        if (preg_match('/^\+?[0-9\s\-\(\)\.]+$/', $trimmed) !== 1) {
+            return null;
+        }
+
+        $hasPlus = str_starts_with($trimmed, '+');
+        $digits = preg_replace('/\D+/', '', $trimmed);
+
+        if (!is_string($digits) || $digits === '') {
+            return null;
+        }
+
+        if ($hasPlus) {
+            if (!str_starts_with($digits, '62') || str_starts_with($digits, '620')) {
+                return null;
+            }
+
+            $normalized = $digits;
+        } elseif (str_starts_with($digits, '0')) {
+            $normalized = '62' . substr($digits, 1);
+        } elseif (str_starts_with($digits, '62')) {
+            if (str_starts_with($digits, '620')) {
+                return null;
+            }
+
+            $normalized = $digits;
+        } else {
+            return null;
+        }
+
+        if (preg_match('/^628[0-9]{7,12}$/', $normalized) !== 1) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    /**
      * Model boot events:
-     * Pastikan user non-PIC tidak pernah menyimpan nomor WhatsApp di database.
+     * Pastikan user selain role yang diizinkan (guru/pic) tidak menyimpan nomor WhatsApp di database.
      */
     protected static function booted(): void
     {
         static::saving(function (User $user) {
-            if ($user->role !== 'pic') {
+            if (!static::canHaveWhatsAppPhone($user->role)) {
                 $user->phone = null;
             }
         });

@@ -43,18 +43,17 @@ class UserController extends Controller
      */
     public function store(Request $request)
     {
-        $isPic = $request->role === 'pic';
+        $canHaveWhatsApp = User::canHaveWhatsAppPhone($request->role);
 
         $request->validate([
             'name' => 'required',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|min:6',
             'role' => 'required|in:admin,pic,guru,siswa',
-            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
-        ]);
+            'phone' => $canHaveWhatsApp ? $this->whatsAppPhoneValidationRules() : 'nullable',
+        ], $this->whatsAppValidationMessages());
 
-        $rawPhone = trim((string) $request->phone);
-        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
+        $phone = $this->resolveNormalizedWhatsAppPhone($request, $canHaveWhatsApp);
 
         User::create([
             'name' => $request->name,
@@ -93,20 +92,20 @@ class UserController extends Controller
      */
     public function update(Request $request, User $user)
     {
-        $isPic = $request->role === 'pic';
+        $canHaveWhatsApp = User::canHaveWhatsAppPhone($request->role);
 
         $request->validate([
             'name' => 'required',
             'email' => 'required|email|unique:users,email,' . $user->id,
             'role' => 'required|in:admin,pic,guru,siswa',
-            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
-        ]);
+            'phone' => $canHaveWhatsApp ? $this->whatsAppPhoneValidationRules() : 'nullable',
+        ], $this->whatsAppValidationMessages());
 
         $assignedRooms = $user->rooms()
             ->orderBy('room_name')
             ->pluck('room_name');
 
-        if ($assignedRooms->isNotEmpty() && !$isPic) {
+        if ($assignedRooms->isNotEmpty() && $request->role !== 'pic') {
             $roomList = $assignedRooms->implode(', ');
 
             return back()
@@ -116,8 +115,7 @@ class UserController extends Controller
                 ]);
         }
 
-        $rawPhone = trim((string) $request->phone);
-        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
+        $phone = $this->resolveNormalizedWhatsAppPhone($request, $canHaveWhatsApp);
 
         $data = [
             'name' => $request->name,
@@ -134,6 +132,55 @@ class UserController extends Controller
 
         return redirect()->route('users.index')
                          ->with('success', 'Data user berhasil diperbarui.');
+    }
+
+    /**
+     * Normalisasi nomor WhatsApp di server sebelum disimpan ke kolom users.phone (VARCHAR 20).
+     */
+    private function resolveNormalizedWhatsAppPhone(Request $request, bool $canHaveWhatsApp): ?string
+    {
+        if (!$canHaveWhatsApp) {
+            return null;
+        }
+
+        $normalized = User::normalizeWhatsAppPhone((string) $request->input('phone', ''));
+        if ($normalized === null || strlen($normalized) > 20) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Aturan validasi nomor WhatsApp untuk role Guru / Organisasi dan PIC.
+     * Input mentah boleh memakai pemisah hingga 25 karakter sebelum dinormalisasi ke 628... (10-15 digit).
+     *
+     * @return array<int, mixed>
+     */
+    private function whatsAppPhoneValidationRules(): array
+    {
+        return [
+            'nullable',
+            'string',
+            'max:25',
+            function (string $attribute, mixed $value, \Closure $fail): void {
+                $raw = trim((string) $value);
+                if ($raw !== '' && User::normalizeWhatsAppPhone($raw) === null) {
+                    $fail('Format nomor WhatsApp tidak valid atau terlalu panjang. Gunakan format 08..., 628..., atau +628... (10-15 digit).');
+                }
+            },
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function whatsAppValidationMessages(): array
+    {
+        return [
+            'phone.string' => 'Nomor WhatsApp harus berupa teks.',
+            'phone.max' => 'Nomor WhatsApp maksimal 25 karakter sebelum normalisasi.',
+        ];
     }
 
     /**
