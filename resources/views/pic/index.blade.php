@@ -29,19 +29,82 @@
 
 @section('content')
 
+@php
+    $picFilterRoute = request()->routeIs('pic.agenda') ? route('pic.agenda') : route('pic.events');
+@endphp
+
+<h2>Daftar Agenda Ruangan</h2>
+
 @if(session('success'))
 <div class="alert-success">
     {{ session('success') }}
 </div>
 @endif
 
-@if($errors->any())
-<div class="alert-danger">
-    {{ $errors->first('rejection_reason') }}
+@if(session('warning'))
+<div class="alert-warning">
+    {{ session('warning') }}
 </div>
 @endif
 
-<table>
+@if(session('error'))
+<div class="alert-danger">
+    {{ session('error') }}
+</div>
+@endif
+
+@if($errors->any())
+<div class="alert-danger">
+    @foreach($errors->all() as $error)
+        <div>{{ $error }}</div>
+    @endforeach
+</div>
+@endif
+
+<form action="{{ $picFilterRoute }}" method="GET" class="date-filter-form">
+    <div class="filter-field filter-field-search">
+        <label for="pic_agenda_search">Pencarian</label>
+        <input
+            type="search"
+            id="pic_agenda_search"
+            name="search"
+            value="{{ old('search', $filters['search'] ?? request('search')) }}"
+            class="form-control"
+            placeholder="Cari judul, ruangan, atau guru..."
+        >
+    </div>
+
+    <div class="filter-field">
+        <label for="pic_tanggal_mulai">Tanggal Mulai</label>
+        <input
+            type="date"
+            id="pic_tanggal_mulai"
+            name="tanggal_mulai"
+            value="{{ old('tanggal_mulai', $filters['tanggal_mulai'] ?? request('tanggal_mulai')) }}"
+            class="form-control"
+        >
+    </div>
+
+    <div class="filter-field">
+        <label for="pic_tanggal_selesai">Tanggal Selesai</label>
+        <input
+            type="date"
+            id="pic_tanggal_selesai"
+            name="tanggal_selesai"
+            value="{{ old('tanggal_selesai', $filters['tanggal_selesai'] ?? request('tanggal_selesai')) }}"
+            class="form-control"
+        >
+    </div>
+
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-edit">Terapkan Filter</button>
+        <a href="{{ $picFilterRoute }}" class="btn btn-back">Reset Filter</a>
+    </div>
+</form>
+
+<div class="agenda-table-wrapper">
+
+<table class="agenda-table">
 
     <thead>
 
@@ -51,9 +114,12 @@
             <th>Guru</th>
             <th>Ruangan</th>
             <th>Tanggal</th>
+            <th>Waktu Sesi</th>
+            <th>Jam Mulai</th>
+            <th>Jam Selesai</th>
             <th>Status</th>
             <th>Disetujui</th>
-            <th width="220">Aksi</th>
+            <th>Aksi</th>
         </tr>
 
     </thead>
@@ -64,15 +130,33 @@
 
     <tr>
 
-        <td>{{ $loop->iteration }}</td>
+        <td>{{ method_exists($agenda, 'firstItem') && $agenda->firstItem() ? ($agenda->firstItem() + $loop->index) : $loop->iteration }}</td>
 
         <td>{{ $item->judul }}</td>
 
-        <td>{{ $item->user->name }}</td>
+        <td>{{ $item->user?->name ?? '-' }}</td>
 
-        <td>{{ $item->ruangan->nama_ruangan }}</td>
+        <td>
+            @if(isset($item->rooms) && $item->rooms->count() > 1)
+                <div class="room-pill-list">
+                    @foreach($item->rooms as $r)
+                        <span class="room-pill-badge">
+                            {{ $r->room_name ?: $r->nama_ruangan }}
+                        </span>
+                    @endforeach
+                </div>
+            @else
+                {{ $item->ruangan->nama_ruangan ?? ($item->room->room_name ?? '-') }}
+            @endif
+        </td>
 
         <td>{{ $item->formatted_date_range }}</td>
+
+        <td>{{ $item->session_range }}</td>
+
+        <td>{{ $item->start_time ? substr((string) $item->start_time, 0, 5) : '-' }}</td>
+
+        <td>{{ $item->end_time ? substr((string) $item->end_time, 0, 5) : '-' }}</td>
 
         <td>
 
@@ -84,6 +168,11 @@
                 <span class="badge-danger">
                     Ditolak
                 </span>
+                @if($item->rejection_reason)
+                    <div class="rejection-reason-note">
+                        <strong>Alasan:</strong> {{ $item->rejection_reason }}
+                    </div>
+                @endif
             @elseif($item->status_pelaksanaan === 'Sedang Berlangsung')
                 <span class="badge-ongoing">
                     Sedang Berlangsung
@@ -102,23 +191,25 @@
 
         <td>{{ $item->status == 'Menunggu' ? '-' : ($item->approver?->name ?? '-') }}</td>
 
-        <td>
+        <td class="room-actions-cell">
 
             @if($item->status == 'Menunggu')
 
-            <form action="{{ route('agenda.setujui',$item->id) }}"
-                  method="POST"
-                  style="display:inline-block">
+            <div class="room-actions">
+                <form action="{{ route('agenda.setujui',$item->id) }}"
+                      method="POST"
+                      class="room-delete-form">
 
-                @csrf
+                    @csrf
 
-                <button class="btn btn-edit">
-                    Setujui
-                </button>
+                    <button type="submit" class="btn btn-edit">
+                        Setujui
+                    </button>
 
-            </form>
+                </form>
 
-            <a href="{{ route('agenda.tolak.form', $item) }}" class="btn btn-delete">Tolak</a>
+                <a href="{{ route('agenda.tolak.form', $item) }}" class="btn btn-delete">Tolak</a>
+            </div>
 
             @else
 
@@ -134,7 +225,7 @@
 
     <tr>
 
-        <td colspan="8" style="text-align:center;">
+        <td colspan="11" style="text-align:center;">
             Belum ada agenda.
         </td>
 
@@ -146,8 +237,10 @@
 
 </table>
 
+</div>
+
 <div style="margin-top:20px;">
-    {{ $agenda->links() }}
+    {{ $agenda->withQueryString()->links() }}
 </div>
 
 @endsection

@@ -97,6 +97,40 @@ jobs:
               $zipFile = __DIR__ . '/deploy_payload.zip';
           }
           $selfFile = __FILE__;
+
+          // Helper pembersih direktori staging (HANYA menghapus berkas sementara)
+          $cleanupStaging = function (bool $keepBackup = false) use ($zipFile, $stagingDir, $selfFile) {
+              if (file_exists($zipFile)) {
+                  unlink($zipFile);
+              }
+              if (is_dir($stagingDir) && basename($stagingDir) === '.deploy_staging') {
+                  try {
+                      $it = new RecursiveIteratorIterator(
+                          new RecursiveDirectoryIterator($stagingDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                          RecursiveIteratorIterator::CHILD_FIRST
+                      );
+                      foreach ($it as $item) {
+                          if ($keepBackup && str_contains($item->getPathname(), 'pre_deploy_backup')) {
+                              continue;
+                          }
+                          if ($item->isLink() || $item->isFile()) {
+                              unlink($item->getPathname());
+                          } elseif ($item->isDir()) {
+                              rmdir($item->getPathname());
+                          }
+                      }
+                      if (!$keepBackup) {
+                          rmdir($stagingDir);
+                      }
+                  } catch (\Throwable $e) {
+                      // Pengabaian aman exception pada cleanup
+                  }
+              }
+              if (file_exists($selfFile)) {
+                  unlink($selfFile);
+              }
+          };
+
           $hostingRoot = dirname(__DIR__);
           $ukkRapiRoot = realpath(__DIR__ . '/../ukk_rapi') ?: ($hostingRoot . '/ukk_rapi');
           $frameworkDir = $ukkRapiRoot . '/storage/framework';
@@ -131,39 +165,6 @@ jobs:
 
           $storageStage = $STORAGE_STAGE_NOT_MODIFIED;
           $backupIsVerified = false;
-
-          // Helper pembersih direktori staging (HANYA menghapus berkas sementara)
-          $cleanupStaging = function (bool $keepBackup = false) use ($zipFile, $stagingDir, $selfFile) {
-              if (file_exists($zipFile)) {
-                  unlink($zipFile);
-              }
-              if (is_dir($stagingDir) && basename($stagingDir) === '.deploy_staging') {
-                  try {
-                      $it = new RecursiveIteratorIterator(
-                          new RecursiveDirectoryIterator($stagingDir, RecursiveDirectoryIterator::SKIP_DOTS),
-                          RecursiveIteratorIterator::CHILD_FIRST
-                      );
-                      foreach ($it as $item) {
-                          if ($keepBackup && str_contains($item->getPathname(), 'pre_deploy_backup')) {
-                              continue;
-                          }
-                          if ($item->isLink() || $item->isFile()) {
-                              unlink($item->getPathname());
-                          } elseif ($item->isDir()) {
-                              rmdir($item->getPathname());
-                          }
-                      }
-                      if (!$keepBackup) {
-                          rmdir($stagingDir);
-                      }
-                  } catch (\Throwable $e) {
-                      // Pengabaian aman exception pada cleanup
-                  }
-              }
-              if (file_exists($selfFile)) {
-                  unlink($selfFile);
-              }
-          };
 
           if (!file_exists($zipFile)) {
               $cleanupStaging(false);
@@ -2676,7 +2677,7 @@ jobs:
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftp
           local-dir: ./ftp_stage1_shield/
-          server-dir: /public_html/
+          server-dir: public_html/
 
       - name: "🔍 Verify Staging Shield Active (HTTP 403 on Probe File)"
         run: |
@@ -2736,7 +2737,7 @@ jobs:
             --max-time 180 \
             --request POST \
             --data-urlencode "token=${DEPLOY_TOKEN}" \
-           "[https://ahmad-rapi.web.id/.deploy_staging/auto_extract.php](https://ahmad-rapi.web.id/.deploy_staging/auto_extract.php)"
+            "https://ahmad-rapi.web.id/auto_extract.php")
           CURL_STATUS=$?
           set -e
 

@@ -7,6 +7,7 @@ use App\Models\Event;
 use App\Models\Room;
 use App\Models\ScheduleNotification;
 use App\Models\User;
+use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -306,7 +307,9 @@ class EventController extends Controller
             ], 404);
         }
 
-        if (!$event->room || $event->room->pic_id !== $authUser->id) {
+        $picId = (int) $authUser->id;
+
+        if (!$event->room || $event->room->pic_id === null || (int) $event->room->pic_id !== $picId) {
             return response()->json([
                 'success' => false,
                 'message' => 'Agenda ini berada di luar ruangan tanggung jawab Anda.'
@@ -320,19 +323,28 @@ class EventController extends Controller
             ], 422);
         }
 
-        $sisters = $event->getSisterEvents();
-        if ($sisters->isEmpty()) {
-            $sisters = collect([$event]);
+        $sisters = $event->getSisterEvents()
+            ->loadMissing('room')
+            ->filter(fn (Event $sister) => $sister->status === 'Menunggu'
+                && $sister->room
+                && $sister->room->pic_id !== null
+                && (int) $sister->room->pic_id === $picId)
+            ->values();
+
+        if (!$sisters->contains('id', $event->id)) {
+            $sisters->push($event);
         }
 
-        foreach ($sisters as $sister) {
-            $sister->update([
-                'status' => 'Disetujui',
-                'approved_by' => $authUser->id,
-            ]);
-        }
+        DB::transaction(function () use ($sisters, $picId) {
+            foreach ($sisters as $sister) {
+                $sister->update([
+                    'status' => 'Disetujui',
+                    'approved_by' => $picId,
+                ]);
+            }
+        });
 
-        $event->load(['room', 'requester', 'approver']);
+        $event->refresh()->load(['room', 'requester', 'approver']);
 
         return response()->json([
             'success' => true,
@@ -364,7 +376,9 @@ class EventController extends Controller
             ], 404);
         }
 
-        if (!$event->room || $event->room->pic_id !== $authUser->id) {
+        $picId = (int) $authUser->id;
+
+        if (!$event->room || $event->room->pic_id === null || (int) $event->room->pic_id !== $picId) {
             return response()->json([
                 'success' => false,
                 'message' => 'Agenda ini berada di luar ruangan tanggung jawab Anda.'
@@ -378,27 +392,38 @@ class EventController extends Controller
             ], 422);
         }
 
-        $request->validate([
+        $validated = $request->validate([
             'alasan' => 'required|string|max:500',
         ], [
             'alasan.required' => 'Alasan penolakan agenda wajib diisi.',
         ]);
 
-        $sisters = $event->getSisterEvents();
-        if ($sisters->isEmpty()) {
-            $sisters = collect([$event]);
+        $sisters = $event->getSisterEvents()
+            ->loadMissing('room')
+            ->filter(fn (Event $sister) => $sister->status === 'Menunggu'
+                && $sister->room
+                && $sister->room->pic_id !== null
+                && (int) $sister->room->pic_id === $picId)
+            ->values();
+
+        if (!$sisters->contains('id', $event->id)) {
+            $sisters->push($event);
         }
 
-        foreach ($sisters as $sister) {
-            $sister->update([
-                'status' => 'Ditolak',
-                'approved_by' => $authUser->id,
-                'rejection_reason' => $request->alasan,
-                'rejected_at' => now(),
-            ]);
-        }
+        $rejectedAt = now();
 
-        $event->load(['room', 'requester', 'approver']);
+        DB::transaction(function () use ($sisters, $picId, $validated, $rejectedAt) {
+            foreach ($sisters as $sister) {
+                $sister->update([
+                    'status' => 'Ditolak',
+                    'approved_by' => $picId,
+                    'rejection_reason' => $validated['alasan'],
+                    'rejected_at' => $rejectedAt,
+                ]);
+            }
+        });
+
+        $event->refresh()->load(['room', 'requester', 'approver']);
 
         return response()->json([
             'success' => true,
@@ -509,6 +534,9 @@ class EventController extends Controller
             ], 422);
         }
 
+        $oldRoomId = (int) $event->room_id;
+        $oldRoom = Room::with('pic')->find($oldRoomId);
+
         $event->update([
             'event_name' => $request->judul,
             'date' => $request->tanggal,
@@ -518,13 +546,42 @@ class EventController extends Controller
             'description' => $request->keterangan,
         ]);
 
+        $waResult = null;
+        if ($oldRoomId !== (int) $room->id) {
+            ScheduleNotification::create([
+                'user_id' => $event->requester_id,
+                'event_id' => $event->id,
+                'title' => 'Ruangan agenda dipindahkan',
+                'message' =>
+                    'Agenda "' . $event->event_name .
+                    '" dipindahkan dari "' . ($oldRoom?->room_name ?? 'ruangan sebelumnya') .
+                    '" ke "' . $room->room_name . '".',
+                'read_at' => null,
+            ]);
+
+            $waResult = app(WhatsAppService::class)->notifyRoomChanged(
+                $event->fresh(['requester', 'user', 'room.pic']),
+                $oldRoom,
+                $room->loadMissing('pic')
+            );
+        }
+
         $event->load(['room', 'requester']);
 
-        return response()->json([
+        $responsePayload = [
             'success' => true,
             'message' => 'Agenda berhasil diperbarui.',
-            'data' => $event
-        ]);
+            'data' => $event,
+        ];
+
+        if ($waResult !== null) {
+            $responsePayload['whatsapp_notification'] = [
+                'status' => $waResult['status'],
+                'message' => $waResult['message'],
+            ];
+        }
+
+        return response()->json($responsePayload);
     }
 
     // =========================
@@ -553,6 +610,13 @@ class EventController extends Controller
             'alasan' => 'required|string|max:500',
         ]);
 
+        if ((int) $request->ruangan_id === (int) $event->room_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Ruangan tujuan harus berbeda dari ruangan saat ini.'
+            ], 422);
+        }
+
         $room = Room::whereKey($request->ruangan_id)
             ->where('is_active', true)
             ->first();
@@ -580,6 +644,9 @@ class EventController extends Controller
             ], 422);
         }
 
+        $oldRoomId = (int) $event->room_id;
+        $oldRoom = Room::with('pic')->find($oldRoomId);
+
         DB::transaction(function () use ($event, $request, $room): void {
             $event->update([
                 'room_id' => $request->ruangan_id,
@@ -598,12 +665,28 @@ class EventController extends Controller
             ]);
         });
 
+        $waResult = null;
+        if ($oldRoomId !== (int) $room->id) {
+            $waResult = app(WhatsAppService::class)->notifyRoomChanged(
+                $event->fresh(['requester', 'user', 'room.pic']),
+                $oldRoom,
+                $room->loadMissing('pic'),
+                $request->alasan
+            );
+        }
+
         $event->load(['room', 'requester']);
 
         return response()->json([
             'success' => true,
-            'message' => 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.',
-            'data' => $event
+            'message' => $waResult && $waResult['status'] === 'sent'
+                ? 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.'
+                : 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.',
+            'data' => $event,
+            'whatsapp_notification' => $waResult ? [
+                'status' => $waResult['status'],
+                'message' => $waResult['message'],
+            ] : null,
         ]);
     }
 

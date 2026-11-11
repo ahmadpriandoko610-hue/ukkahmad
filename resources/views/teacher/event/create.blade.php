@@ -193,7 +193,7 @@
 
 
     {{-- BUTTON --}}
-    <div style="margin-top: 20px;">
+    <div class="form-actions">
 
         <button
             type="submit"
@@ -205,7 +205,6 @@
         <a
             href="{{ route('guru.agenda') }}"
             class="btn btn-back"
-            style="text-decoration:none; margin-left:10px;"
         >
             Kembali
         </a>

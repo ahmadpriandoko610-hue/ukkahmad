@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Event;
 use App\Models\Room;
 use App\Models\ScheduleNotification;
+use App\Services\WhatsAppService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -12,23 +13,37 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use App\Support\TablePdf;
 
 class EventController extends Controller
 {
+    private WhatsAppService $whatsAppService;
+
+    public function __construct(?WhatsAppService $whatsAppService = null)
+    {
+        $this->whatsAppService = $whatsAppService ?? app(WhatsAppService::class);
+    }
+
     /**
      * =========================================================
      * ADMIN - DAFTAR AGENDA
      * =========================================================
      */
-    public function index()
+    public function index(Request $request)
     {
-        $today = Carbon::today()->toDateString();
-        $rawAgenda = Event::notExpired()->with(['user', 'room', 'approver'])
-            ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
-            ->orderBy('date', 'asc')
-            ->orderBy('start_time', 'asc')
+        $filters = $this->resolveAgendaListFilters($request, 'agenda.index');
+        if (isset($filters['error_response'])) {
+            return $filters['error_response'];
+        }
+
+        $query = Event::notExpired()->with(['user', 'room', 'approver']);
+        $this->applyAgendaListFilters($query, $filters);
+
+        $rawAgenda = $query
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
             ->get();
 
         $grouped = Event::groupEventsForDisplay($rawAgenda);
@@ -38,10 +53,10 @@ class EventController extends Controller
         $currentItems = $grouped->slice(($currentPage - 1) * $perPage, $perPage)->values();
         $agenda = new LengthAwarePaginator($currentItems, $grouped->count(), $perPage, $currentPage, [
             'path' => LengthAwarePaginator::resolveCurrentPath(),
-            'query' => request()->query(),
+            'query' => $request->query(),
         ]);
 
-        return view('admin.event.index', compact('agenda'));
+        return view('admin.event.index', compact('agenda', 'filters'));
     }
 
     /** Laporan agenda admin berdasarkan periode harian, mingguan, atau bulanan. */
@@ -417,6 +432,9 @@ class EventController extends Controller
          * UPDATE
          * =====================================================
          */
+        $oldRoomId = (int) $event->room_id;
+        $oldRoom = Room::with('pic')->find($oldRoomId);
+
         $event->update([
             'event_name' => $request->judul,
             'date' => $request->tanggal,
@@ -427,12 +445,45 @@ class EventController extends Controller
             'description' => $request->keterangan,
         ]);
 
-        return redirect()
-            ->route('agenda.index')
-            ->with(
-                'success',
-                'Agenda berhasil diperbarui.'
+        $flashSuccess = 'Agenda berhasil diperbarui.';
+        $flashWarning = null;
+
+        if ($oldRoomId !== (int) $room->id) {
+            ScheduleNotification::create([
+                'user_id' => $event->requester_id,
+                'event_id' => $event->id,
+                'title' => 'Ruangan agenda dipindahkan',
+                'message' =>
+                    'Agenda "' . $event->event_name . '" tanggal ' .
+                    $event->formatted_date_range .
+                    ' dipindahkan dari ' .
+                    ($oldRoom?->room_name ?? 'ruangan sebelumnya') .
+                    ' ke ' .
+                    $room->room_name . '.',
+            ]);
+
+            $waResult = $this->whatsAppService->notifyRoomChanged(
+                $event->fresh(['requester', 'user', 'room.pic']),
+                $oldRoom,
+                $room->loadMissing('pic')
             );
+
+            if ($waResult['status'] === 'sent') {
+                $flashSuccess = 'Agenda berhasil diperbarui dan notifikasi WhatsApp perubahan ruangan telah dikirim.';
+            } elseif ($waResult['status'] !== 'skipped_unchanged') {
+                $flashWarning = 'Perubahan agenda tersimpan. ' . $waResult['message'];
+            }
+        }
+
+        $redirect = redirect()
+            ->route('agenda.index')
+            ->with('success', $flashSuccess);
+
+        if ($flashWarning !== null) {
+            $redirect->with('warning', $flashWarning);
+        }
+
+        return $redirect;
     }
 
     /**
@@ -444,36 +495,77 @@ class EventController extends Controller
     {
         $this->ensurePicOwnsRoom($event);
 
-        return $this->approvePendingEvent($event, 'pic.events');
+        return $this->approvePendingEvent($event, 'pic.events', (int) Auth::id());
     }
 
     /** Admin dapat menyetujui agenda dari halaman Kelola Agenda. */
     public function adminApprove(Event $event)
     {
-        if ($event->status !== 'Menunggu') {
-            return redirect()->route('agenda.index')->with('error', 'Hanya agenda berstatus Menunggu yang dapat disetujui.');
-        }
-
         return $this->approvePendingEvent($event, 'agenda.index');
     }
 
-    private function approvePendingEvent(Event $event, string $route)
+    private function approvePendingEvent(Event $event, string $route, ?int $picUserId = null)
     {
-        if ($event->status !== 'Menunggu') {
-            return redirect()->route($route)->with('error', 'Hanya agenda berstatus Menunggu yang dapat disetujui.');
+        $event->loadMissing('room');
+
+        if ($picUserId !== null) {
+            if (
+                !$event->room ||
+                $event->room->pic_id === null ||
+                (int) $event->room->pic_id !== $picUserId
+            ) {
+                abort(
+                    403,
+                    'Anda tidak memiliki hak untuk menangani agenda pada ruangan ini.'
+                );
+            }
+
+            if ($event->status !== 'Menunggu') {
+                return redirect()
+                    ->route($route)
+                    ->with('error', 'Hanya agenda berstatus Menunggu yang dapat disetujui.');
+            }
         }
 
-        $sisters = $event->getSisterEvents();
-        if ($sisters->isEmpty()) {
-            $sisters = collect([$event]);
+        $sisters = $event->getSisterEvents()->loadMissing('room');
+
+        if ($picUserId !== null) {
+            $eligibleEvents = $sisters
+                ->filter(fn (Event $sister) => $sister->status === 'Menunggu'
+                    && $sister->room
+                    && $sister->room->pic_id !== null
+                    && (int) $sister->room->pic_id === $picUserId)
+                ->values();
+
+            if ($event->status === 'Menunggu' && !$eligibleEvents->contains('id', $event->id)) {
+                $eligibleEvents->push($event);
+            }
+        } else {
+            $eligibleEvents = $sisters
+                ->filter(fn (Event $sister) => $sister->status === 'Menunggu')
+                ->values();
+
+            if ($event->status === 'Menunggu' && !$eligibleEvents->contains('id', $event->id)) {
+                $eligibleEvents->push($event);
+            }
+
+            if ($eligibleEvents->isEmpty()) {
+                return redirect()
+                    ->route($route)
+                    ->with('error', 'Hanya agenda berstatus Menunggu yang dapat disetujui.');
+            }
         }
 
-        foreach ($sisters as $sister) {
-            $sister->update([
-                'status' => 'Disetujui',
-                'approved_by' => Auth::id(),
-            ]);
-        }
+        $approverId = Auth::id();
+
+        DB::transaction(function () use ($eligibleEvents, $approverId) {
+            foreach ($eligibleEvents as $sister) {
+                $sister->update([
+                    'status' => 'Disetujui',
+                    'approved_by' => $approverId,
+                ]);
+            }
+        });
 
         return redirect()
             ->route($route)
@@ -492,12 +584,31 @@ class EventController extends Controller
     {
         $this->ensurePicOwnsRoom($event);
 
+        if ($event->status !== 'Menunggu') {
+            $redirectRoute = request()->routeIs('agenda.tolak.form') ? 'pic.agenda' : 'pic.events';
+
+            return redirect()
+                ->route($redirectRoute)
+                ->with('error', 'Hanya agenda berstatus Menunggu yang dapat ditolak.');
+        }
+
         return view('pic.reject', compact('event'));
     }
 
     public function reject(Request $request, Event $event)
     {
+        return $this->rejectPendingEventForPic($request, $event, 'pic.events');
+    }
+
+    private function rejectPendingEventForPic(Request $request, Event $event, string $route)
+    {
         $this->ensurePicOwnsRoom($event);
+
+        if ($event->status !== 'Menunggu') {
+            return redirect()
+                ->route($route)
+                ->with('error', 'Hanya agenda berstatus Menunggu yang dapat ditolak.');
+        }
 
         $validated = $request->validate([
             'rejection_reason' => ['required', 'string', 'max:2000'],
@@ -506,15 +617,35 @@ class EventController extends Controller
             'rejection_reason.max' => 'Keterangan penolakan maksimal 2000 karakter.',
         ]);
 
-        $event->update([
-            'status' => 'Ditolak',
-            'approved_by' => Auth::id(),
-            'rejection_reason' => $validated['rejection_reason'],
-            'rejected_at' => now(),
-        ]);
+        $picUserId = (int) Auth::id();
+
+        $sisters = $event->getSisterEvents()
+            ->loadMissing('room')
+            ->filter(fn (Event $sister) => $sister->status === 'Menunggu'
+                && $sister->room
+                && $sister->room->pic_id !== null
+                && (int) $sister->room->pic_id === $picUserId)
+            ->values();
+
+        if ($event->status === 'Menunggu' && !$sisters->contains('id', $event->id)) {
+            $sisters->push($event);
+        }
+
+        $rejectedAt = now();
+
+        DB::transaction(function () use ($sisters, $picUserId, $validated, $rejectedAt) {
+            foreach ($sisters as $sister) {
+                $sister->update([
+                    'status' => 'Ditolak',
+                    'approved_by' => $picUserId,
+                    'rejection_reason' => $validated['rejection_reason'],
+                    'rejected_at' => $rejectedAt,
+                ]);
+            }
+        });
 
         return redirect()
-            ->route('pic.events')
+            ->route($route)
             ->with(
                 'success',
                 'Agenda berhasil ditolak.'
@@ -533,9 +664,11 @@ class EventController extends Controller
             $sisters = collect([$event]);
         }
 
-        foreach ($sisters as $sister) {
-            $sister->delete();
-        }
+        DB::transaction(function () use ($sisters) {
+            foreach ($sisters as $sister) {
+                $sister->delete();
+            }
+        });
 
         return redirect()
             ->route('agenda.index')
@@ -550,7 +683,16 @@ class EventController extends Controller
      */
     public function adminReject(Request $request, Event $event)
     {
-        if ($event->status !== 'Menunggu') {
+        $sisters = $event->getSisterEvents();
+        $eligibleEvents = $sisters
+            ->filter(fn (Event $sister) => $sister->status === 'Menunggu')
+            ->values();
+
+        if ($event->status === 'Menunggu' && !$eligibleEvents->contains('id', $event->id)) {
+            $eligibleEvents->push($event);
+        }
+
+        if ($eligibleEvents->isEmpty()) {
             return redirect()
                 ->route('agenda.index')
                 ->with('error', 'Hanya agenda berstatus Menunggu yang dapat ditolak.');
@@ -563,19 +705,19 @@ class EventController extends Controller
             'rejection_reason.max' => 'Keterangan penolakan maksimal 2000 karakter.',
         ]);
 
-        $sisters = $event->getSisterEvents();
-        if ($sisters->isEmpty()) {
-            $sisters = collect([$event]);
-        }
+        $approverId = Auth::id();
+        $rejectedAt = now();
 
-        foreach ($sisters as $sister) {
-            $sister->update([
-                'status' => 'Ditolak',
-                'approved_by' => Auth::id(),
-                'rejection_reason' => $validated['rejection_reason'],
-                'rejected_at' => now(),
-            ]);
-        }
+        DB::transaction(function () use ($eligibleEvents, $approverId, $validated, $rejectedAt) {
+            foreach ($eligibleEvents as $sister) {
+                $sister->update([
+                    'status' => 'Ditolak',
+                    'approved_by' => $approverId,
+                    'rejection_reason' => $validated['rejection_reason'],
+                    'rejected_at' => $rejectedAt,
+                ]);
+            }
+        });
 
         return redirect()
             ->route('agenda.index')
@@ -587,27 +729,35 @@ class EventController extends Controller
      */
     public function cancel(Request $request, Event $event)
     {
-        if ($event->status !== 'Menunggu') {
+        $sisters = $event->getSisterEvents();
+        $eligibleEvents = $sisters
+            ->filter(fn (Event $sister) => $sister->status === 'Menunggu')
+            ->values();
+
+        if ($event->status === 'Menunggu' && !$eligibleEvents->contains('id', $event->id)) {
+            $eligibleEvents->push($event);
+        }
+
+        if ($eligibleEvents->isEmpty()) {
             return redirect()
                 ->route('agenda.index')
                 ->with('error', 'Hanya agenda berstatus Menunggu yang dapat dibatalkan/ditolak.');
         }
 
         $reason = $request->input('rejection_reason') ?: 'Ditolak oleh Administrator.';
+        $approverId = Auth::id();
+        $rejectedAt = now();
 
-        $sisters = $event->getSisterEvents();
-        if ($sisters->isEmpty()) {
-            $sisters = collect([$event]);
-        }
-
-        foreach ($sisters as $sister) {
-            $sister->update([
-                'status' => 'Ditolak',
-                'approved_by' => Auth::id(),
-                'rejection_reason' => $reason,
-                'rejected_at' => now(),
-            ]);
-        }
+        DB::transaction(function () use ($eligibleEvents, $approverId, $reason, $rejectedAt) {
+            foreach ($eligibleEvents as $sister) {
+                $sister->update([
+                    'status' => 'Ditolak',
+                    'approved_by' => $approverId,
+                    'rejection_reason' => $reason,
+                    'rejected_at' => $rejectedAt,
+                ]);
+            }
+        });
 
         return redirect()
             ->route('agenda.index')
@@ -619,10 +769,15 @@ class EventController extends Controller
      * PIC - VERIFIKASI AGENDA
      * =========================================================
      */
-    public function verification()
+    public function verification(Request $request)
     {
-        $today = Carbon::today()->toDateString();
-        $agenda = Event::notExpired()->with([
+        $redirectRoute = $request->routeIs('pic.agenda') ? 'pic.agenda' : 'pic.events';
+        $filters = $this->resolveAgendaListFilters($request, $redirectRoute);
+        if (isset($filters['error_response'])) {
+            return $filters['error_response'];
+        }
+
+        $query = Event::notExpired()->with([
                 'user',
                 'room',
                 'approver',
@@ -632,15 +787,28 @@ class EventController extends Controller
                     'pic_id',
                     Auth::id()
                 );
-            })
-            ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
-            ->orderBy('date', 'asc')
-            ->orderBy('start_time', 'asc')
-            ->paginate(10);
+            });
+
+        $this->applyAgendaListFilters($query, $filters);
+
+        $rawAgenda = $query
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+
+        $grouped = Event::groupEventsForDisplay($rawAgenda);
+
+        $currentPage = LengthAwarePaginator::resolveCurrentPage();
+        $perPage = 10;
+        $currentItems = $grouped->slice(($currentPage - 1) * $perPage, $perPage)->values();
+        $agenda = new LengthAwarePaginator($currentItems, $grouped->count(), $perPage, $currentPage, [
+            'path' => LengthAwarePaginator::resolveCurrentPath(),
+            'query' => $request->query(),
+        ]);
 
         return view(
             'pic.index',
-            compact('agenda')
+            compact('agenda', 'filters')
         );
     }
 
@@ -653,17 +821,7 @@ class EventController extends Controller
     {
         $this->ensurePicOwnsRoom($event);
 
-        $event->update([
-            'status' => 'Disetujui',
-            'approved_by' => Auth::id(),
-        ]);
-
-        return redirect()
-            ->route('pic.agenda')
-            ->with(
-                'success',
-                'Agenda berhasil disetujui.'
-            );
+        return $this->approvePendingEvent($event, 'pic.agenda', (int) Auth::id());
     }
 
     /**
@@ -673,28 +831,7 @@ class EventController extends Controller
      */
     public function tolak(Request $request, Event $event)
     {
-        $this->ensurePicOwnsRoom($event);
-
-        $validated = $request->validate([
-            'rejection_reason' => ['required', 'string', 'max:2000'],
-        ], [
-            'rejection_reason.required' => 'Keterangan penolakan wajib diisi.',
-            'rejection_reason.max' => 'Keterangan penolakan maksimal 2000 karakter.',
-        ]);
-
-        $event->update([
-            'status' => 'Ditolak',
-            'approved_by' => Auth::id(),
-            'rejection_reason' => $validated['rejection_reason'],
-            'rejected_at' => now(),
-        ]);
-
-        return redirect()
-            ->route('pic.agenda')
-            ->with(
-                'success',
-                'Agenda berhasil ditolak.'
-            );
+        return $this->rejectPendingEventForPic($request, $event, 'pic.agenda');
     }
 
     /**
@@ -702,10 +839,15 @@ class EventController extends Controller
      * AGENDA MILIK GURU
      * =========================================================
      */
-    public function agendaGuru()
+    public function agendaGuru(Request $request)
     {
-        $today = Carbon::now('Asia/Jakarta')->toDateString();
-        $rawAgenda = Event::visibleInTeacherAgenda()
+        $redirectRoute = $request->routeIs('guru.events') ? 'guru.events' : 'guru.agenda';
+        $filters = $this->resolveAgendaListFilters($request, $redirectRoute);
+        if (isset($filters['error_response'])) {
+            return $filters['error_response'];
+        }
+
+        $query = Event::visibleInTeacherAgenda()
             ->with([
                 'user',
                 'room',
@@ -714,10 +856,13 @@ class EventController extends Controller
             ->where(
                 'requester_id',
                 Auth::id()
-            )
-            ->orderByRaw("CASE WHEN COALESCE(end_date, date) >= ? THEN 0 ELSE 1 END", [$today])
-            ->orderBy('date', 'asc')
-            ->orderBy('start_time', 'asc')
+            );
+
+        $this->applyAgendaListFilters($query, $filters);
+
+        $rawAgenda = $query
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
             ->get();
 
         $grouped = Event::groupEventsForDisplay($rawAgenda);
@@ -727,7 +872,7 @@ class EventController extends Controller
         $currentItems = $grouped->slice(($currentPage - 1) * $perPage, $perPage)->values();
         $agenda = new LengthAwarePaginator($currentItems, $grouped->count(), $perPage, $currentPage, [
             'path' => LengthAwarePaginator::resolveCurrentPath(),
-            'query' => request()->query(),
+            'query' => $request->query(),
         ]);
 
         $notifications = ScheduleNotification::where(
@@ -754,7 +899,8 @@ class EventController extends Controller
             'teacher.event.index',
             compact(
                 'agenda',
-                'notifications'
+                'notifications',
+                'filters'
             )
         );
     }
@@ -764,9 +910,9 @@ class EventController extends Controller
      * ALIAS AGENDA GURU
      * =========================================================
      */
-    public function myEvents()
+    public function myEvents(Request $request)
     {
-        return $this->agendaGuru();
+        return $this->agendaGuru($request);
     }
     
     public function teacherCalendar()
@@ -1062,11 +1208,12 @@ public function picCalendar()
         }
 
         /**
-         * Simpan nama ruangan lama
+         * Simpan data ruangan lama
          * sebelum update.
          */
-        $oldRoomName = $event->room?->room_name
-            ?? 'ruangan sebelumnya';
+        $oldRoomId = (int) $event->room_id;
+        $oldRoom = Room::with('pic')->find($oldRoomId);
+        $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
 
         /**
          * =====================================================
@@ -1080,30 +1227,44 @@ public function picCalendar()
 
         /**
          * =====================================================
-         * BUAT NOTIFIKASI
+         * BUAT NOTIFIKASI INTERNAL & WHATSAPP
          * =====================================================
          */
-       ScheduleNotification::create([
-    'user_id' => $event->requester_id,
-    'event_id' => $event->id,
-    'title' => 'Ruangan agenda dipindahkan',
-    'message' =>
-    'Agenda "' . $event->event_name . '" tanggal ' .
-    $event->formatted_date_range .
-    ' dipindahkan dari ' .
-    $oldRoomName .
-    ' ke ' .
-    $room->room_name .
-    '. Alasan: ' .
-    $request->move_reason,
-]);
+        ScheduleNotification::create([
+            'user_id' => $event->requester_id,
+            'event_id' => $event->id,
+            'title' => 'Ruangan agenda dipindahkan',
+            'message' =>
+                'Agenda "' . $event->event_name . '" tanggal ' .
+                $event->formatted_date_range .
+                ' dipindahkan dari ' .
+                $oldRoomName .
+                ' ke ' .
+                $room->room_name .
+                '. Alasan: ' .
+                $request->move_reason,
+        ]);
 
-        return redirect()
+        $waResult = $this->whatsAppService->notifyRoomChanged(
+            $event->fresh(['requester', 'user', 'room.pic']),
+            $oldRoom,
+            $room->loadMissing('pic'),
+            $request->move_reason
+        );
+
+        $flashSuccess = $waResult['status'] === 'sent'
+            ? 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.'
+            : 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.';
+
+        $redirect = redirect()
             ->route('agenda.index')
-            ->with(
-                'success',
-                'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.'
-            );
+            ->with('success', $flashSuccess);
+
+        if ($waResult['status'] !== 'sent' && $waResult['status'] !== 'skipped_unchanged') {
+            $redirect->with('warning', 'Perubahan ruangan tersimpan. ' . $waResult['message']);
+        }
+
+        return $redirect;
     }
 
     /**
@@ -1194,10 +1355,13 @@ public function publicCalendar()
         Event $event
     ): void {
         $event->loadMissing('room');
+        $authId = Auth::id();
 
         if (
+            $authId === null ||
             !$event->room ||
-            $event->room->pic_id !== Auth::id()
+            $event->room->pic_id === null ||
+            (int) $event->room->pic_id !== (int) $authId
         ) {
             abort(
                 403,
@@ -1257,6 +1421,74 @@ public function publicCalendar()
                 $startTime
             )
             ->exists();
+    }
+
+    /**
+     * Validasi dan ambil parameter filter tanggal & pencarian daftar agenda.
+     *
+     * @return array{tanggal_mulai: ?string, tanggal_selesai: ?string, search: string, error_response?: \Illuminate\Http\RedirectResponse}
+     */
+    private function resolveAgendaListFilters(Request $request, string $redirectRoute): array
+    {
+        $validator = Validator::make($request->query(), [
+            'tanggal_mulai' => ['nullable', 'date'],
+            'tanggal_selesai' => array_values(array_filter([
+                'nullable',
+                'date',
+                $request->filled('tanggal_mulai') ? 'after_or_equal:tanggal_mulai' : null,
+            ])),
+            'search' => ['nullable', 'string', 'max:255'],
+        ], [
+            'tanggal_mulai.date' => 'Format tanggal mulai tidak valid.',
+            'tanggal_selesai.date' => 'Format tanggal selesai tidak valid.',
+            'tanggal_selesai.after_or_equal' => 'Tanggal mulai tidak boleh lebih besar daripada tanggal selesai.',
+        ]);
+
+        if ($validator->fails()) {
+            return [
+                'tanggal_mulai' => null,
+                'tanggal_selesai' => null,
+                'search' => '',
+                'error_response' => redirect()
+                    ->route($redirectRoute)
+                    ->withErrors($validator)
+                    ->withInput(),
+            ];
+        }
+
+        $validated = $validator->validated();
+
+        return [
+            'tanggal_mulai' => !empty($validated['tanggal_mulai']) ? (string) $validated['tanggal_mulai'] : null,
+            'tanggal_selesai' => !empty($validated['tanggal_selesai']) ? (string) $validated['tanggal_selesai'] : null,
+            'search' => trim((string) ($validated['search'] ?? '')),
+        ];
+    }
+
+    /**
+     * Terapkan filter rentang tanggal & pencarian ke query agenda.
+     *
+     * @param array{tanggal_mulai: ?string, tanggal_selesai: ?string, search: string} $filters
+     */
+    private function applyAgendaListFilters(Builder $query, array $filters): void
+    {
+        if (!empty($filters['tanggal_mulai'])) {
+            $query->whereDate(DB::raw('COALESCE(end_date, date)'), '>=', $filters['tanggal_mulai']);
+        }
+
+        if (!empty($filters['tanggal_selesai'])) {
+            $query->whereDate('date', '<=', $filters['tanggal_selesai']);
+        }
+
+        if ($filters['search'] !== '') {
+            $search = $filters['search'];
+            $query->where(function (Builder $sub) use ($search): void {
+                $sub->where('event_name', 'like', "%{$search}%")
+                    ->orWhere('description', 'like', "%{$search}%")
+                    ->orWhereHas('room', fn (Builder $roomQ) => $roomQ->where('room_name', 'like', "%{$search}%"))
+                    ->orWhereHas('user', fn (Builder $userQ) => $userQ->where('name', 'like', "%{$search}%"));
+            });
+        }
     }
 
     /**

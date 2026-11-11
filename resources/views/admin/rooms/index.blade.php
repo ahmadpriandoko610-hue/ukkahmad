@@ -44,22 +44,29 @@
 
 @endif
 
+@if (session('error'))
+
+    <div class="alert-danger">
+        {{ session('error') }}
+    </div>
+
+@endif
+
 
 {{-- TOMBOL TAMBAH RUANGAN --}}
 
-<div style="margin: 20px 0;">
+<div class="page-action-bar">
 
     <a
         href="{{ route('rooms.create') }}"
-        class="btn-login"
-        style="display: inline-block; width: auto; padding: 10px 20px; text-decoration: none;"
+        class="btn-login page-primary-btn"
     >
         + Tambah Ruangan
     </a>
 
 </div>
 
-<form action="{{ route('rooms.index') }}" method="GET" style="display:flex; gap:10px; max-width:600px; margin:0 0 20px;">
+<form action="{{ route('rooms.index') }}" method="GET" class="filter-bar-form">
     <input
         type="search"
         name="search"
@@ -68,16 +75,20 @@
         placeholder="Cari nama ruangan, lokasi, atau PIC..."
         aria-label="Cari ruangan"
     >
-    <button type="submit" class="btn btn-edit">Cari</button>
-    @if ($search !== '')
-        <a href="{{ route('rooms.index') }}" class="btn btn-back">Reset</a>
-    @endif
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-edit">Cari</button>
+        @if ($search !== '')
+            <a href="{{ route('rooms.index') }}" class="btn btn-back">Reset</a>
+        @endif
+    </div>
 </form>
 
 
 {{-- TABEL RUANGAN --}}
 
-<table>
+<div class="agenda-table-wrapper">
+
+<table class="agenda-table data-table-medium">
 
     <thead>
 
@@ -220,6 +231,8 @@
     </tbody>
 
 </table>
+
+</div>
 
 @if(method_exists($rooms, 'hasPages') && $rooms->hasPages())
 <div style="margin-top:20px;">

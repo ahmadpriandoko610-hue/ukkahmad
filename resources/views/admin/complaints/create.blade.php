@@ -54,8 +54,10 @@
         <canvas id="photo-canvas" hidden></canvas>
         <small class="form-help">JPG, JPEG, PNG, atau WEBP. Maksimal 2 MB.</small>
     </div>
-    <button type="submit" class="btn-login">Kirim Pengaduan</button>
-    <a href="{{ route('agenda.index') }}" class="btn btn-back">Batal</a>
+    <div class="form-actions">
+        <button type="submit" class="btn-login">Kirim Pengaduan</button>
+        <a href="{{ route('agenda.index') }}" class="btn btn-back">Batal</a>
+    </div>
 </form>
 
 <script>

@@ -25,7 +25,9 @@
     {{-- SIDEBAR --}}
     {{-- ========================================================= --}}
 
-    <aside class="sidebar">
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <aside class="sidebar" id="sidebar" aria-label="Navigasi Utama">
 
         {{-- BRAND --}}
         <div class="sidebar-brand">
@@ -36,9 +38,12 @@
                 <small>Sekolah</small>
             </div>
 
-            <span class="badge-role">
-                {{ Auth::user()->role_label }}
-            </span>
+            <div class="sidebar-brand-actions">
+                <span class="badge-role">
+                    {{ Auth::user()->role_label }}
+                </span>
+                <button type="button" class="sidebar-close-btn" id="sidebarClose" aria-label="Tutup menu">✕</button>
+            </div>
 
         </div>
 
@@ -154,7 +159,7 @@
 
 
                 <a href="{{ route('pic.complaints') }}"
-                   class="menu-item {{ (request()->routeIs('pic.complaints', 'pic.complaints.update') && !request()->routeIs('pic.complaints.report')) ? 'active' : '' }}">
+                   class="menu-item {{ (request()->routeIs('pic.complaints', 'pic.complaints.update', 'pic.complaints.edit') && !request()->routeIs('pic.complaints.report')) ? 'active' : '' }}">
 
                     Pengaduan Kerusakan
 
@@ -288,7 +293,17 @@
         <header class="navbar-top">
 
             {{-- JUDUL HALAMAN --}}
-            <div>
+            <div class="navbar-title-group">
+                <button
+                    type="button"
+                    class="sidebar-toggle-btn"
+                    id="sidebarToggle"
+                    aria-label="Buka menu"
+                    aria-expanded="false"
+                    aria-controls="sidebar"
+                >
+                    ☰
+                </button>
 
                 <h2>
                     @yield('judul')
@@ -379,7 +394,7 @@
 
 
                 {{-- NAMA + ROLE --}}
-                <div>
+                <div class="navbar-user-meta">
 
                     <strong>
                         {{ Auth::user()->name }}
@@ -413,6 +428,66 @@
 
    <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const sidebar = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const sidebarClose = document.getElementById('sidebarClose');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+
+    function closeSidebar() {
+        if (!sidebar) return;
+        sidebar.classList.remove('open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.remove('show');
+        document.body.classList.remove('sidebar-open');
+        if (sidebarToggle) sidebarToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    function openSidebar() {
+        if (!sidebar) return;
+        sidebar.classList.add('open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.add('show');
+        document.body.classList.add('sidebar-open');
+        if (sidebarToggle) sidebarToggle.setAttribute('aria-expanded', 'true');
+    }
+
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', function () {
+            if (sidebar && sidebar.classList.contains('open')) {
+                closeSidebar();
+            } else {
+                openSidebar();
+            }
+        });
+    }
+
+    if (sidebarClose) {
+        sidebarClose.addEventListener('click', closeSidebar);
+    }
+
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeSidebar);
+    }
+
+    if (sidebar) {
+        sidebar.querySelectorAll('a.menu-item').forEach(function (link) {
+            link.addEventListener('click', function () {
+                if (window.innerWidth <= 1024) {
+                    closeSidebar();
+                }
+            });
+        });
+    }
+
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && sidebar && sidebar.classList.contains('open')) {
+            closeSidebar();
+        }
+    });
+
+    window.addEventListener('resize', function () {
+        if (window.innerWidth > 1024) {
+            closeSidebar();
+        }
+    });
 
     const button = document.getElementById('notificationButton');
     const dropdown = document.getElementById('notificationDropdown');

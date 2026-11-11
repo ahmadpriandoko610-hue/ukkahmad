@@ -91,22 +91,26 @@
                 >›</button>
             </div>
 
-            {{-- NAMA HARI (SENIN S.D. MINGGU DI KANAN) --}}
-            <div class="calendar-weekdays">
-                <div>Sen</div>
-                <div>Sel</div>
-                <div>Rab</div>
-                <div>Kam</div>
-                <div>Jum</div>
-                <div>Sab</div>
-                <div>Min</div>
-            </div>
+            <div class="calendar-scroll-wrapper">
+                <div class="calendar-grid-inner">
+                    {{-- NAMA HARI (SENIN S.D. MINGGU DI KANAN) --}}
+                    <div class="calendar-weekdays">
+                        <div>Sen</div>
+                        <div>Sel</div>
+                        <div>Rab</div>
+                        <div>Kam</div>
+                        <div>Jum</div>
+                        <div>Sab</div>
+                        <div>Min</div>
+                    </div>
 
-            {{-- GRID KALENDER TANGGAL --}}
-            <div
-                id="calendar"
-                class="calendar-days"
-            ></div>
+                    {{-- GRID KALENDER TANGGAL --}}
+                    <div
+                        id="calendar"
+                        class="calendar-days"
+                    ></div>
+                </div>
+            </div>
 
             {{-- PESAN KOSONG --}}
             <div

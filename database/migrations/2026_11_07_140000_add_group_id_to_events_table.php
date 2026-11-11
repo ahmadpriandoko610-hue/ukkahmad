@@ -23,11 +23,27 @@ return new class extends Migration
      */
     public function down(): void
     {
-        if (Schema::hasTable('events') && Schema::hasColumn('events', 'group_id')) {
-            Schema::table('events', function (Blueprint $table) {
-                $table->dropColumn('group_id');
+        if (!Schema::hasTable('events') || !Schema::hasColumn('events', 'group_id')) {
+            return;
+        }
+
+        $indexes = collect(Schema::getIndexes('events'))
+            ->filter(fn (array $index): bool => in_array('group_id', $index['columns'] ?? [], true) && !($index['primary'] ?? false))
+            ->pluck('name')
+            ->filter()
+            ->values();
+
+        if ($indexes->isNotEmpty()) {
+            Schema::table('events', function (Blueprint $table) use ($indexes) {
+                foreach ($indexes as $indexName) {
+                    $table->dropIndex($indexName);
+                }
             });
         }
+
+        Schema::table('events', function (Blueprint $table) {
+            $table->dropColumn('group_id');
+        });
     }
 };
 

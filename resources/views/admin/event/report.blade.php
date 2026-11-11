@@ -80,5 +80,8 @@
 .report-actions summary { list-style:none; cursor:pointer; }
 .report-actions summary::-webkit-details-marker { display:none; }
 .report-actions-menu { position:absolute; z-index:5; top:calc(100% + 6px); right:0; display:flex; gap:8px; padding:10px; background:#fff; border:1px solid #ddd; border-radius:8px; box-shadow:0 4px 12px #0002; white-space:nowrap; }
+@media (max-width: 640px) {
+    .report-actions-menu { left:0; right:auto; }
+}
 </style>
 @endsection

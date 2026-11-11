@@ -174,18 +174,21 @@
 
             {{-- BAWAH: TINDAKAN UPDATE STATUS PIC --}}
             <div class="complaint-neat-footer" style="align-items: flex-start;">
-                <div style="flex: 1; min-width: 200px;">
+                <div style="flex: 1; min-width: 0;">
                     <span style="font-size: 12.5px; color: #64748b; display: block; margin-bottom: 4px;">
                         Kelola status perbaikan fasilitas ini:
                     </span>
                     @if ($complaint->repaired_at)
-                        <span style="font-size: 12px; color: #16a34a; font-weight: 500;">
+                        <span style="font-size: 12px; color: #16a34a; font-weight: 500; display: block; margin-bottom: 8px;">
                             Ditandai selesai pada: {{ $complaint->repaired_at->format('d M Y, H:i') }}
                         </span>
                     @endif
+                    <a href="{{ route('pic.complaints.edit', $complaint->id) }}" class="btn btn-edit" style="font-size: 12.5px;">
+                        Edit Perbaikan
+                    </a>
                 </div>
 
-                <form method="POST" action="{{ route('pic.complaints.update', $complaint->id) }}" class="complaint-pic-form" style="flex: 2; min-width: 280px; justify-content: flex-end;">
+                <form method="POST" action="{{ route('pic.complaints.update', $complaint->id) }}" class="complaint-pic-form" style="flex: 2; min-width: 0; width: 100%; justify-content: flex-end;">
                     @csrf
                     @method('PUT')
 

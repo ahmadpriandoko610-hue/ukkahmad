@@ -144,7 +144,7 @@ class RoomController extends Controller
             'room_name'   => 'required|string|max:255',
             'location'    => 'required|string|max:255',
             'capacity'    => 'required|integer|min:1',
-            'pic_id'      => 'required|exists:users,id',
+            'pic_id'      => 'nullable|exists:users,id',
             'description' => 'nullable|string',
         ], [
             'room_name.required' => 'Nama ruangan wajib diisi.',
@@ -152,28 +152,32 @@ class RoomController extends Controller
             'capacity.required'  => 'Kapasitas wajib diisi.',
             'capacity.integer'   => 'Kapasitas harus berupa angka.',
             'capacity.min'       => 'Kapasitas minimal 1.',
-            'pic_id.required'    => 'PIC ruangan wajib dipilih.',
             'pic_id.exists'      => 'PIC yang dipilih tidak valid.',
         ]);
 
-        // Pastikan user yang dipilih memang PIC
-        $pic = User::where('id', $request->pic_id)
-            ->where('role', 'pic')
-            ->first();
+        $picId = null;
+        if ($request->filled('pic_id')) {
+            // Pastikan user yang dipilih memang PIC
+            $pic = User::where('id', $request->pic_id)
+                ->where('role', 'pic')
+                ->first();
 
-        if (!$pic) {
-            return back()
-                ->withInput()
-                ->withErrors([
-                    'pic_id' => 'User yang dipilih bukan PIC.',
-                ]);
+            if (!$pic) {
+                return back()
+                    ->withInput()
+                    ->withErrors([
+                        'pic_id' => 'User yang dipilih bukan PIC.',
+                    ]);
+            }
+
+            $picId = $pic->id;
         }
 
         $room->update([
             'room_name'   => $request->room_name,
             'location'    => $request->location,
             'capacity'    => $request->capacity,
-            'pic_id'      => $request->pic_id,
+            'pic_id'      => $picId,
             'description' => $request->description,
         ]);
 
@@ -187,6 +191,24 @@ class RoomController extends Controller
      */
     public function destroy(Room $room)
     {
+        if ($room->pic_id !== null || $room->pic()->exists()) {
+            return redirect()
+                ->route('rooms.index')
+                ->with(
+                    'error',
+                    'Ruangan tidak dapat dihapus karena masih memiliki PIC yang bertanggung jawab. Silakan ubah atau lepaskan penanggung jawab ruangan terlebih dahulu.'
+                );
+        }
+
+        if ($room->events()->exists() || $room->complaints()->exists()) {
+            return redirect()
+                ->route('rooms.index')
+                ->with(
+                    'error',
+                    'Ruangan tidak dapat dihapus karena masih memiliki riwayat agenda atau pengaduan yang terhubung.'
+                );
+        }
+
         $room->delete();
 
         return redirect()

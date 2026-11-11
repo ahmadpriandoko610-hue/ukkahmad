@@ -33,21 +33,20 @@
 </div>
 @endif
 
-<div style="margin:20px 0; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+<div class="page-action-bar">
     <a href="{{ route('users.create') }}"
-       class="btn-login"
-       style="display:inline-flex; align-items:center; gap:8px; width:auto; padding:10px 20px; text-decoration:none;">
+       class="btn-login page-primary-btn">
         + Tambah User Manual
     </a>
 
     <a href="{{ route('users.import.form') }}"
-       class="btn-login"
-       style="display:inline-flex; align-items:center; gap:8px; width:auto; padding:10px 20px; text-decoration:none; background:#059669; border-color:#059669;">
+       class="btn-login page-primary-btn"
+       style="background:#059669; border-color:#059669;">
         Import Pengguna Excel
     </a>
 </div>
 
-<form action="{{ route('users.index') }}" method="GET" style="margin-bottom:20px; display:flex; gap:10px;">
+<form action="{{ route('users.index') }}" method="GET" class="filter-bar-form">
 
     <input
         type="text"
@@ -56,13 +55,17 @@
         class="form-control"
         placeholder="Cari nama atau email...">
 
-    <button type="submit" class="btn-login" style="width:auto;padding:0 20px;">
-        Cari
-    </button>
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-edit">
+            Cari
+        </button>
+    </div>
 
 </form>
 
-<table border="1" width="100%" cellpadding="10">
+<div class="agenda-table-wrapper">
+
+<table class="agenda-table data-table-medium">
 
     <thead>
         <tr>
@@ -84,27 +87,29 @@
             <td>{{ $user->email }}</td>
             <td>{{ $user->role_label }}</td>
 
-            <td>
+            <td class="room-actions-cell">
 
-                <a href="{{ route('users.edit', $user->id) }}"
-                   class="btn btn-edit">
-                    Edit
-                </a>
+                <div class="room-actions">
+                    <a href="{{ route('users.edit', $user->id) }}"
+                       class="btn btn-edit">
+                        Edit
+                    </a>
 
-                <form action="{{ route('users.destroy', $user->id) }}"
-                      method="POST"
-                      style="display:inline-block;">
+                    <form action="{{ route('users.destroy', $user->id) }}"
+                          method="POST"
+                          class="room-delete-form">
 
-                    @csrf
-                    @method('DELETE')
+                        @csrf
+                        @method('DELETE')
 
-                    <button type="submit"
-                            class="btn btn-delete"
-                            onclick="return confirm('Yakin ingin menghapus user ini?')">
-                        Hapus
-                    </button>
+                        <button type="submit"
+                                class="btn btn-delete"
+                                onclick="return confirm('Yakin ingin menghapus user ini?')">
+                            Hapus
+                        </button>
 
-                </form>
+                    </form>
+                </div>
 
             </td>
 
@@ -115,6 +120,8 @@
     </tbody>
 
 </table>
+
+</div>
 
 <div style="margin-top:20px;">
    {{ $users->withQueryString()->links() }}

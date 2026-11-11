@@ -17,6 +17,12 @@
 @endsection
 
 @section('content')
+@if (session('success'))
+    <div class="alert alert-success">
+        {{ session('success') }}
+    </div>
+@endif
+
 <div class="report-screen-only" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:20px;">
     <form method="GET" action="{{ route('pic.complaints.report') }}" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;">
         <label>Periode<br>
@@ -58,7 +64,7 @@
             <thead>
                 <tr>
                     <th>No</th><th>Waktu Laporan</th><th>Ruangan</th><th>Pelapor</th>
-                    <th>Deskripsi Kerusakan</th><th>Status</th><th>Ditangani Oleh</th>
+                    <th>Deskripsi Kerusakan</th><th>Status</th><th>Ditangani Oleh</th><th class="report-screen-only">Aksi</th>
                 </tr>
             </thead>
             <tbody>
@@ -78,9 +84,14 @@
                             @endif
                         </td>
                         <td>{{ $complaint->handler?->name ?? '-' }}</td>
+                        <td class="report-screen-only" style="white-space: nowrap;">
+                            <a href="{{ route('pic.complaints.edit', ['complaint' => $complaint->id, 'from' => 'report']) }}" class="btn btn-edit">
+                                Edit Perbaikan
+                            </a>
+                        </td>
                     </tr>
                 @empty
-                    <tr><td colspan="7" style="text-align:center;">Tidak ada pengaduan pada periode ini.</td></tr>
+                    <tr><td colspan="8" style="text-align:center;">Tidak ada pengaduan pada periode ini.</td></tr>
                 @endforelse
             </tbody>
         </table>
@@ -99,5 +110,8 @@
 .report-actions summary { list-style:none; cursor:pointer; }
 .report-actions summary::-webkit-details-marker { display:none; }
 .report-actions-menu { position:absolute; z-index:5; top:calc(100% + 6px); right:0; display:flex; gap:8px; padding:10px; background:#fff; border:1px solid #ddd; border-radius:8px; box-shadow:0 4px 12px #0002; white-space:nowrap; }
+@media (max-width: 640px) {
+    .report-actions-menu { left:0; right:auto; }
+}
 </style>
 @endsection

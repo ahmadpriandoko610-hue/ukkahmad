@@ -242,7 +242,7 @@
             </div>
 
             <div class="dash-card-body">
-                <div class="dash-steps-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <div class="dash-steps-grid dash-steps-grid-2">
                     {{-- STEP 1 --}}
                     <div class="dash-step-card">
                         <div class="dash-step-number">1</div>

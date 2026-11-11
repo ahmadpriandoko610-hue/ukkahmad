@@ -52,7 +52,9 @@
         <textarea name="move_reason" id="move_reason" class="form-control" rows="5" required>{{ old('move_reason') }}</textarea>
     </div>
 
-    <button type="submit" class="btn-login">Simpan Pemindahan</button>
-    <a href="{{ route('agenda.index') }}" class="btn btn-back">Batal</a>
+    <div class="form-actions">
+        <button type="submit" class="btn-login">Simpan Pemindahan</button>
+        <a href="{{ route('agenda.index') }}" class="btn btn-back">Batal</a>
+    </div>
 </form>
 @endsection

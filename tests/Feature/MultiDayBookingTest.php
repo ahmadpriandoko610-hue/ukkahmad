@@ -38,31 +38,37 @@ class MultiDayBookingTest extends TestCase
 
     public function test_guru_can_create_multiday_booking(): void
     {
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Kemah Kepramukaan',
-                'tanggal' => '2026-11-10',
-                'tanggal_selesai' => '2026-11-12',
-                'sesi_mulai' => 1,
-                'sesi_selesai' => 4,
-                'ruangan_id' => $this->room->id,
-                'keterangan' => 'Kegiatan kepramukaan sekolah 3 hari berturut-turut.',
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
+
+        try {
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Kemah Kepramukaan',
+                    'tanggal' => '2026-11-10',
+                    'tanggal_selesai' => '2026-11-12',
+                    'sesi_mulai' => 1,
+                    'sesi_selesai' => 4,
+                    'ruangan_id' => $this->room->id,
+                    'keterangan' => 'Kegiatan kepramukaan sekolah 3 hari berturut-turut.',
+                ]);
+
+            $response->assertSessionHas('success');
+
+            $this->assertDatabaseHas('events', [
+                'event_name' => 'Kemah Kepramukaan',
+                'room_id' => $this->room->id,
+                'date' => '2026-11-10 00:00:00',
+                'end_date' => '2026-11-12 00:00:00',
+                'start_time' => '07:30:00',
+                'end_time' => '10:30:00',
+                'requester_id' => $this->guru->id,
             ]);
 
-        $response->assertSessionHas('success');
-
-        $this->assertDatabaseHas('events', [
-            'event_name' => 'Kemah Kepramukaan',
-            'room_id' => $this->room->id,
-            'date' => '2026-11-10 00:00:00',
-            'end_date' => '2026-11-12 00:00:00',
-            'start_time' => '07:30:00',
-            'end_time' => '10:30:00',
-            'requester_id' => $this->guru->id,
-        ]);
-
-        $event = Event::where('event_name', 'Kemah Kepramukaan')->first();
-        $this->assertEquals('10-11-2026 s/d 12-11-2026', $event->formatted_date_range);
+            $event = Event::where('event_name', 'Kemah Kepramukaan')->first();
+            $this->assertEquals('10-11-2026 s/d 12-11-2026', $event->formatted_date_range);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_multiday_booking_defaults_end_date_to_start_date_when_empty(): void

@@ -327,6 +327,9 @@ Route::middleware(['auth', 'role:pic'])->group(function () {
     Route::get('/pic/complaints/report', [ComplaintController::class, 'picReport'])
         ->name('pic.complaints.report');
 
+    Route::get('/pic/complaints/{complaint}/edit', [ComplaintController::class, 'edit'])
+        ->name('pic.complaints.edit');
+
     // Update status pengaduan
     Route::put('/pic/complaints/{complaint}', [ComplaintController::class, 'update'])
         ->name('pic.complaints.update');

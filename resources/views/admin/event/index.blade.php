@@ -14,7 +14,7 @@
     Kelola User
 </a>
 
-<a href="{{ route('ruangan.index') }}" class="menu-item">
+<a href="{{ route('rooms.index') }}" class="menu-item">
     Kelola Ruangan
 </a>
 
@@ -43,24 +43,78 @@
 </div>
 @endif
 
+@if(session('warning'))
+<div class="alert-warning">
+    {{ session('warning') }}
+</div>
+@endif
+
 @if(session('error'))
 <div class="alert-danger">
     {{ session('error') }}
 </div>
 @endif
 
+@if($errors->any())
+<div class="alert-danger">
+    @foreach($errors->all() as $error)
+        <div>{{ $error }}</div>
+    @endforeach
+</div>
+@endif
 
-<div style="margin:20px 0;">
+
+<div class="page-action-bar">
 
     <a href="{{ route('agenda.create') }}"
-       class="btn-login"
-       style="display:inline-block;width:auto;padding:10px 20px;text-decoration:none;">
+       class="btn-login page-primary-btn">
 
         + Tambah Agenda
 
     </a>
 
 </div>
+
+<form action="{{ route('agenda.index') }}" method="GET" class="date-filter-form">
+    <div class="filter-field filter-field-search">
+        <label for="admin_agenda_search">Pencarian</label>
+        <input
+            type="search"
+            id="admin_agenda_search"
+            name="search"
+            value="{{ old('search', $filters['search'] ?? request('search')) }}"
+            class="form-control"
+            placeholder="Cari judul, ruangan, atau pengaju..."
+        >
+    </div>
+
+    <div class="filter-field">
+        <label for="admin_tanggal_mulai">Tanggal Mulai</label>
+        <input
+            type="date"
+            id="admin_tanggal_mulai"
+            name="tanggal_mulai"
+            value="{{ old('tanggal_mulai', $filters['tanggal_mulai'] ?? request('tanggal_mulai')) }}"
+            class="form-control"
+        >
+    </div>
+
+    <div class="filter-field">
+        <label for="admin_tanggal_selesai">Tanggal Selesai</label>
+        <input
+            type="date"
+            id="admin_tanggal_selesai"
+            name="tanggal_selesai"
+            value="{{ old('tanggal_selesai', $filters['tanggal_selesai'] ?? request('tanggal_selesai')) }}"
+            class="form-control"
+        >
+    </div>
+
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-edit">Terapkan Filter</button>
+        <a href="{{ route('agenda.index') }}" class="btn btn-back">Reset Filter</a>
+    </div>
+</form>
 
 
 <div class="agenda-table-wrapper">
@@ -73,7 +127,9 @@
             <th>No</th>
             <th>Judul</th>
             <th>Tanggal</th>
-            <th>Sesi</th>
+            <th>Waktu Sesi</th>
+            <th>Jam Mulai</th>
+            <th>Jam Selesai</th>
             <th>Ruangan</th>
             <th>Pengaju</th>
             <th>Status</th>
@@ -91,7 +147,7 @@
         <tr>
 
             <td>
-                {{ $loop->iteration }}
+                {{ method_exists($agenda, 'firstItem') && $agenda->firstItem() ? ($agenda->firstItem() + $loop->index) : $loop->iteration }}
             </td>
 
             <td>
@@ -107,10 +163,18 @@
             </td>
 
             <td>
+                {{ $item->start_time ? substr((string) $item->start_time, 0, 5) : '-' }}
+            </td>
+
+            <td>
+                {{ $item->end_time ? substr((string) $item->end_time, 0, 5) : '-' }}
+            </td>
+
+            <td>
                 @if(isset($item->rooms) && $item->rooms->count() > 1)
-                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div class="room-pill-list">
                         @foreach($item->rooms as $r)
-                            <span style="background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; display: inline-block;">
+                            <span class="room-pill-badge">
                                 {{ $r->room_name ?: $r->nama_ruangan }}
                             </span>
                         @endforeach
@@ -121,7 +185,7 @@
             </td>
 
             <td>
-                {{ $item->user->name }}
+                {{ $item->user?->name ?? '-' }}
             </td>
 
             <td>
@@ -136,7 +200,7 @@
                 @elseif($item->status === 'Ditolak')
                     <span class="badge-danger">Ditolak</span>
                     @if($item->rejection_reason)
-                        <div style="font-size: 11px; color: #b91c1c; margin-top: 4px; max-width: 180px; word-break: break-word; line-height: 1.3;">
+                        <div class="rejection-reason-note">
                             <strong>Alasan:</strong> {{ $item->rejection_reason }}
                         </div>
                     @endif
@@ -151,6 +215,10 @@
             <td class="agenda-action-cell">
 
                 <div class="agenda-actions">
+
+                    <a href="{{ route('events.show', $item->id) }}" class="btn btn-back" style="grid-column:1/-1">
+                        Detail
+                    </a>
 
                     @if($item->status === 'Menunggu')
                         <form action="{{ route('admin.agenda.approve', $item) }}" method="POST">
@@ -252,7 +320,7 @@
 
         <tr>
 
-            <td colspan="9" style="text-align:center;">
+            <td colspan="11" style="text-align:center;">
 
                 Belum ada data agenda.
 
@@ -271,13 +339,13 @@
 
 <div style="margin-top:20px;">
 
-    {{ $agenda->links() }}
+    {{ $agenda->withQueryString()->links() }}
 
 </div>
 
 {{-- MODAL TOLAK AGENDA --}}
-<div id="rejectModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
-    <div class="modal-content" style="background:#fff; border-radius:8px; max-width:480px; width:90%; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
+<div id="rejectModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:16px;">
+    <div class="modal-content" style="background:#fff; border-radius:8px; max-width:480px; width:100%; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
         <h3 style="margin-top:0; margin-bottom:12px; font-size:18px; color:#1e293b;">Tolak Pengajuan Agenda</h3>
         <p style="margin-bottom:16px; color:#64748b; font-size:14px;">
             Masukkan alasan / keterangan penolakan untuk agenda <strong id="modalEventTitle"></strong>:
@@ -298,7 +366,7 @@
                 ></textarea>
             </div>
 
-            <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <div class="modal-actions-row">
                 <button type="button" id="btnCancelRejectModal" class="btn btn-back" style="padding:8px 16px; font-size:13px;">Batal</button>
                 <button type="submit" class="btn btn-delete" style="padding:8px 16px; font-size:13px;">Kirim Penolakan</button>
             </div>

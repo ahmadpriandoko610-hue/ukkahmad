@@ -35,4 +35,15 @@ return [
         ],
     ],
 
+    'whatsapp' => [
+        'enabled' => filter_var(env('WHATSAPP_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+        'driver' => env('WHATSAPP_DRIVER', 'webhook'),
+        'endpoint' => env('WHATSAPP_API_ENDPOINT'),
+        'token' => env('WHATSAPP_API_TOKEN'),
+        'auth_header' => env('WHATSAPP_AUTH_HEADER', 'Authorization'),
+        'token_prefix' => env('WHATSAPP_TOKEN_PREFIX', 'Bearer'),
+        'sender' => env('WHATSAPP_SENDER'),
+        'timeout' => (int) env('WHATSAPP_TIMEOUT', 10),
+    ],
+
 ];

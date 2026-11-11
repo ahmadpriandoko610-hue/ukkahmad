@@ -188,6 +188,17 @@ class Event extends Model
     }
 
     /**
+     * Pengaduan kerusakan yang terkait dengan agenda
+     */
+    public function complaints()
+    {
+        return $this->hasMany(
+            Complaint::class,
+            'event_id'
+        );
+    }
+
+    /**
      * Accessor judul
      */
     public function getJudulAttribute()
@@ -242,8 +253,12 @@ class Event extends Model
     /** Rentang sesi yang bersesuaian dengan jam tersimpan. */
     public function getSessionRangeAttribute(): string
     {
-        $startMinutes = $this->minutesSinceMidnight($this->start_time);
-        $endMinutes = $this->minutesSinceMidnight($this->end_time);
+        if (empty($this->start_time) || empty($this->end_time) || !str_contains((string) $this->start_time, ':') || !str_contains((string) $this->end_time, ':')) {
+            return '-';
+        }
+
+        $startMinutes = $this->minutesSinceMidnight((string) $this->start_time);
+        $endMinutes = $this->minutesSinceMidnight((string) $this->end_time);
         $sessionStart = max(1, min(14, (int) floor(($startMinutes - 450) / 45) + 1));
         $sessionEnd = max($sessionStart, min(14, (int) ceil(($endMinutes - 450) / 45)));
 
@@ -252,7 +267,9 @@ class Event extends Model
 
     private function minutesSinceMidnight(string $time): int
     {
-        [$hours, $minutes] = array_map('intval', explode(':', $time));
+        $parts = explode(':', $time);
+        $hours = (int) ($parts[0] ?? 0);
+        $minutes = (int) ($parts[1] ?? 0);
 
         return ($hours * 60) + $minutes;
     }

@@ -14,43 +14,6 @@
     </button>
 </form>
 
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    const startSelect = document.getElementById('sesi_mulai');
-    const endSelect = document.getElementById('sesi_selesai');
-    const tanggalMulai = document.getElementById('tanggal');
-    const tanggalSelesai = document.getElementById('tanggal_selesai');
-
-    if (tanggalMulai && tanggalSelesai) {
-        tanggalMulai.addEventListener('change', function () {
-            if (this.value) {
-                tanggalSelesai.min = this.value;
-                if (tanggalSelesai.value && tanggalSelesai.value < this.value) {
-                    tanggalSelesai.value = this.value;
-                }
-            }
-        });
-    }
-
-    if (!startSelect || !endSelect) return;
-
-    function updateEndSessions() {
-        const start = Number(startSelect.value);
-        [...endSelect.options].forEach((option) => {
-            if (!option.value) return;
-            option.disabled = start > 0 && Number(option.value) < start;
-        });
-
-        if (start > 0 && Number(endSelect.value) < start) {
-            endSelect.value = '';
-        }
-    }
-
-    startSelect.addEventListener('change', updateEndSessions);
-    updateEndSessions();
-});
-</script>
-
 @endsection
 
 @section('content')
@@ -226,7 +189,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     {{-- BUTTON --}}
-    <div style="margin-top: 20px;">
+    <div class="form-actions">
 
         <button
             type="submit"
@@ -238,7 +201,6 @@ document.addEventListener('DOMContentLoaded', () => {
         <a
             href="{{ route('events.index') }}"
             class="btn btn-back"
-            style="text-decoration:none; margin-left:10px;"
         >
             Kembali
         </a>
@@ -246,5 +208,42 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
 
 </form>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const startSelect = document.getElementById('sesi_mulai');
+    const endSelect = document.getElementById('sesi_selesai');
+    const tanggalMulai = document.getElementById('tanggal');
+    const tanggalSelesai = document.getElementById('tanggal_selesai');
+
+    if (tanggalMulai && tanggalSelesai) {
+        tanggalMulai.addEventListener('change', function () {
+            if (this.value) {
+                tanggalSelesai.min = this.value;
+                if (tanggalSelesai.value && tanggalSelesai.value < this.value) {
+                    tanggalSelesai.value = this.value;
+                }
+            }
+        });
+    }
+
+    if (!startSelect || !endSelect) return;
+
+    function updateEndSessions() {
+        const start = Number(startSelect.value);
+        [...endSelect.options].forEach((option) => {
+            if (!option.value) return;
+            option.disabled = start > 0 && Number(option.value) < start;
+        });
+
+        if (start > 0 && Number(endSelect.value) < start) {
+            endSelect.value = '';
+        }
+    }
+
+    startSelect.addEventListener('change', updateEndSessions);
+    updateEndSessions();
+});
+</script>
 
 @endsection

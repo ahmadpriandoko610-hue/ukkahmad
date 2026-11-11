@@ -35,6 +35,10 @@
 
 @section('content')
 
+@php
+    $guruFilterRoute = request()->routeIs('guru.events') ? route('guru.events') : route('guru.agenda');
+@endphp
+
 <h2>Agenda Saya</h2>
 
 @if(session('success'))
@@ -45,6 +49,20 @@
 
 @endif
 
+@if(session('warning'))
+    <div class="alert alert-warning">
+        {{ session('warning') }}
+    </div>
+@endif
+
+@if($errors->any())
+    <div class="alert alert-danger">
+        @foreach($errors->all() as $error)
+            <div>{{ $error }}</div>
+        @endforeach
+    </div>
+@endif
+
 @foreach ($notifications as $notification)
     <div class="alert alert-warning" role="alert">
         <strong>{{ $notification->title }}</strong><br>
@@ -52,10 +70,51 @@
     </div>
 @endforeach
 
+<form action="{{ $guruFilterRoute }}" method="GET" class="date-filter-form">
+    <div class="filter-field filter-field-search">
+        <label for="guru_agenda_search">Pencarian</label>
+        <input
+            type="search"
+            id="guru_agenda_search"
+            name="search"
+            value="{{ old('search', $filters['search'] ?? request('search')) }}"
+            class="form-control"
+            placeholder="Cari judul agenda atau ruangan..."
+        >
+    </div>
 
-<div class="table-container">
+    <div class="filter-field">
+        <label for="guru_tanggal_mulai">Tanggal Mulai</label>
+        <input
+            type="date"
+            id="guru_tanggal_mulai"
+            name="tanggal_mulai"
+            value="{{ old('tanggal_mulai', $filters['tanggal_mulai'] ?? request('tanggal_mulai')) }}"
+            class="form-control"
+        >
+    </div>
 
-    <table>
+    <div class="filter-field">
+        <label for="guru_tanggal_selesai">Tanggal Selesai</label>
+        <input
+            type="date"
+            id="guru_tanggal_selesai"
+            name="tanggal_selesai"
+            value="{{ old('tanggal_selesai', $filters['tanggal_selesai'] ?? request('tanggal_selesai')) }}"
+            class="form-control"
+        >
+    </div>
+
+    <div class="filter-actions">
+        <button type="submit" class="btn btn-edit">Terapkan Filter</button>
+        <a href="{{ $guruFilterRoute }}" class="btn btn-back">Reset Filter</a>
+    </div>
+</form>
+
+
+<div class="table-container agenda-table-wrapper">
+
+    <table class="agenda-table">
 
         <thead>
             <tr>
@@ -63,7 +122,9 @@
                 <th>Judul</th>
                 <th>Ruangan</th>
                 <th>Tanggal</th>
-                <th>Sesi</th>
+                <th>Waktu Sesi</th>
+                <th>Jam Mulai</th>
+                <th>Jam Selesai</th>
                 <th>Status</th>
                 <th>Disetujui</th>
                 <th>Keterangan Penolakan</th>
@@ -87,9 +148,9 @@
 
                 <td>
                     @if(isset($item->rooms) && $item->rooms->count() > 1)
-                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <div class="room-pill-list">
                             @foreach($item->rooms as $r)
-                                <span style="background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; display: inline-block;">
+                                <span class="room-pill-badge">
                                     {{ $r->room_name ?: $r->nama_ruangan }}
                                 </span>
                             @endforeach
@@ -105,6 +166,14 @@
 
                 <td>
                     {{ $item->session_range }}
+                </td>
+
+                <td>
+                    {{ $item->start_time ? substr((string) $item->start_time, 0, 5) : '-' }}
+                </td>
+
+                <td>
+                    {{ $item->end_time ? substr((string) $item->end_time, 0, 5) : '-' }}
                 </td>
 
                 <td>
@@ -151,7 +220,7 @@
 
             <tr>
 
-                <td colspan="9" style="text-align:center;">
+                <td colspan="11" style="text-align:center;">
                     Belum ada agenda.
                 </td>
 
@@ -167,7 +236,7 @@
 
 @if(method_exists($agenda, 'hasPages') && $agenda->hasPages())
     <div style="margin-top: 20px;">
-        {{ $agenda->links() }}
+        {{ $agenda->withQueryString()->links() }}
     </div>
 @endif
 

@@ -109,24 +109,28 @@
         </div>
 
 
-        {{-- NAMA HARI --}}
-        <div class="calendar-weekdays">
+        <div class="calendar-scroll-wrapper">
+            <div class="calendar-grid-inner">
+                {{-- NAMA HARI --}}
+                <div class="calendar-weekdays">
 
-            <div>Sen</div>
-            <div>Sel</div>
-            <div>Rab</div>
-            <div>Kam</div>
-            <div>Jum</div>
-            <div>Sab</div>
-            <div>Min</div>
+                    <div>Sen</div>
+                    <div>Sel</div>
+                    <div>Rab</div>
+                    <div>Kam</div>
+                    <div>Jum</div>
+                    <div>Sab</div>
+                    <div>Min</div>
 
-        </div>
+                </div>
 
 
-        {{-- TANGGAL --}}
-        <div
-            id="calendarDays"
-            class="calendar-days">
+                {{-- TANGGAL --}}
+                <div
+                    id="calendarDays"
+                    class="calendar-days">
+                </div>
+            </div>
         </div>
 
     </div>

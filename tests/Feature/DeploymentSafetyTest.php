@@ -4777,5 +4777,783 @@ class DeploymentSafetyTest extends TestCase
         $shutdownHandler();
         $this->assertFalse($rollbackExecuted, 'Shutdown handler tidak boleh mengeksekusi rollback berulang kali');
     }
+
+    /**
+     * Mem-parsing dan memvalidasi struktur YAML workflow .github/workflows/deploy.yml secara struktural
+     * tanpa bergantung pada ekstensi parser eksternal yang mungkin tidak tersedia di lingkungan lokal.
+     */
+    private function parseAndValidateDeployWorkflow(): array
+    {
+        $workflowPath = base_path('.github/workflows/deploy.yml');
+        $this->assertFileExists($workflowPath, 'Berkas workflow .github/workflows/deploy.yml wajib tersedia.');
+
+        $raw = file_get_contents($workflowPath);
+        $this->assertNotFalse($raw);
+
+        $lines = preg_split("/\r\n|\n|\r/", $raw);
+        $this->assertNotEmpty($lines);
+
+        $branches = [];
+        $inOnPushBranches = false;
+        $inJobsSection = false;
+        $inStepsSection = false;
+        $inRunBlock = false;
+        $runBlockMinIndent = 0;
+
+        $steps = [];
+        $currentStep = null;
+        $subKey = null;
+
+        foreach ($lines as $idx => $line) {
+            $lineNo = $idx + 1;
+
+            // YAML melarang karakter tab sebagai indentasi
+            $this->assertFalse(
+                str_contains($line, "\t"),
+                "Baris {$lineNo} pada deploy.yml mengandung karakter tab (tidak valid dalam YAML)."
+            );
+
+            if (trim($line) === '') {
+                if ($inRunBlock && $currentStep !== null) {
+                    $currentStep['run'] .= "\n";
+                }
+                continue;
+            }
+
+            preg_match('/^( *)/', $line, $indentMatch);
+            $indent = strlen($indentMatch[1]);
+            $trimmed = ltrim($line);
+
+            if ($inRunBlock) {
+                if ($indent >= $runBlockMinIndent) {
+                    $currentStep['run'] .= substr($line, $runBlockMinIndent) . "\n";
+                    continue;
+                }
+                $inRunBlock = false;
+            }
+
+            // Parsing bagian on.push.branches sebelum jobs
+            if (!$inJobsSection) {
+                if ($trimmed === 'branches:') {
+                    $inOnPushBranches = true;
+                    continue;
+                }
+                if ($inOnPushBranches) {
+                    if ($indent >= 6 && preg_match('/^-\s*(.+)$/', $trimmed, $bm)) {
+                        $branches[] = trim($bm[1], " \"'");
+                        continue;
+                    }
+                    if ($indent <= 4) {
+                        $inOnPushBranches = false;
+                    }
+                }
+                if ($trimmed === 'jobs:') {
+                    $inJobsSection = true;
+                }
+                continue;
+            }
+
+            if ($trimmed === 'steps:') {
+                $inStepsSection = true;
+                continue;
+            }
+
+            if (!$inStepsSection) {
+                continue;
+            }
+
+            if (preg_match('/^      - name:\s*(.+)$/', $line, $stepMatch)) {
+                if ($currentStep !== null) {
+                    $steps[] = $currentStep;
+                }
+                $currentStep = [
+                    'line' => $lineNo,
+                    'name' => trim($stepMatch[1], " \"'"),
+                    'uses' => null,
+                    'with' => [],
+                    'env' => [],
+                    'run' => null,
+                ];
+                $subKey = null;
+                continue;
+            }
+
+            $this->assertNotNull(
+                $currentStep,
+                "Struktur step YAML tidak valid pada baris {$lineNo}: {$trimmed}"
+            );
+
+            if ($indent === 8 && preg_match('/^(uses|with|env|run):\s*(.*)$/', $trimmed, $keyMatch)) {
+                $key = $keyMatch[1];
+                $val = trim($keyMatch[2]);
+                if ($key === 'uses') {
+                    $currentStep['uses'] = trim($val, " \"'");
+                    $subKey = null;
+                } elseif ($key === 'run') {
+                    $currentStep['run'] = '';
+                    if ($val === '|' || $val === '|-') {
+                        $inRunBlock = true;
+                        $runBlockMinIndent = 10;
+                    } else {
+                        $currentStep['run'] = $val;
+                    }
+                    $subKey = null;
+                } else {
+                    $subKey = $key;
+                }
+            } elseif ($indent === 10 && $subKey !== null && preg_match('/^([A-Za-z0-9_-]+):\s*(.*)$/', $trimmed, $subMatch)) {
+                $currentStep[$subKey][$subMatch[1]] = trim($subMatch[2], " \"'");
+            } else {
+                $this->fail(
+                    "Struktur indentasi YAML tidak valid pada baris {$lineNo} (indent={$indent}): {$trimmed}"
+                );
+            }
+        }
+
+        if ($currentStep !== null) {
+            $steps[] = $currentStep;
+        }
+
+        $this->assertNotEmpty($steps, 'Workflow deploy.yml wajib memiliki daftar steps yang valid.');
+
+        $stepsByName = [];
+        foreach ($steps as $index => $step) {
+            $hasActionOrRun = ($step['uses'] !== null || $step['run'] !== null);
+            $this->assertTrue(
+                $hasActionOrRun,
+                "Step '{$step['name']}' pada baris {$step['line']} wajib mendefinisikan uses atau run."
+            );
+            $stepsByName[$step['name']] = array_merge($step, ['index' => $index]);
+        }
+
+        return [
+            'raw' => $raw,
+            'branches' => $branches,
+            'steps' => $steps,
+            'stepsByName' => $stepsByName,
+        ];
+    }
+
+    /**
+     * Menjalankan salinan nyata skrip auto_extract.php dalam sandbox terisolasi sekaligus mencatat kondisi akhir filesystem sebelum dibersihkan.
+     */
+    private function runProductionDeployScriptDetailed(?string $zipPath, array $options = []): array
+    {
+        $sandboxDir = sys_get_temp_dir() . '/rapi_run_detail_' . uniqid('', true);
+        $pubHtml = $sandboxDir . '/public_html';
+        $stagingDir = $pubHtml . '/.deploy_staging';
+        $ukkRapi = $sandboxDir . '/ukk_rapi';
+
+        @mkdir($pubHtml, 0755, true);
+        @mkdir($stagingDir, 0755, true);
+        @mkdir($ukkRapi . '/storage/framework', 0755, true);
+        @mkdir($ukkRapi . '/storage/app/public', 0755, true);
+        @mkdir($ukkRapi . '/app', 0755, true);
+
+        file_put_contents($ukkRapi . '/app/Existing.php', "<?php\nreturn 'ORIGINAL_APP_CODE';\n");
+        file_put_contents($pubHtml . '/index.php', "<?php\n// ORIGINAL_INDEX\n");
+
+        if ($options['withStagingShieldFiles'] ?? true) {
+            file_put_contents($stagingDir . '/.htaccess', "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n");
+            file_put_contents($stagingDir . '/probe_test.txt', "STAGING_SHIELD_PROBE_ACTIVE\n");
+        }
+
+        $script = $this->getProductionDeployScript();
+        $token = $options['token'] ?? 'test_valid_deploy_token_2026';
+        $tokenHash = $options['expected_token_hash'] ?? hash('sha256', $token);
+        $script = str_replace('__EXPECTED_TOKEN_HASH__', $tokenHash, $script);
+
+        if (isset($options['scriptTransformer']) && is_callable($options['scriptTransformer'])) {
+            $script = $options['scriptTransformer']($script);
+        }
+
+        if ($zipPath !== null) {
+            $placeInStaging = $options['zipInStaging'] ?? true;
+            $targetZip = $placeInStaging ? ($stagingDir . '/deploy_payload.zip') : ($pubHtml . '/deploy_payload.zip');
+            copy($zipPath, $targetZip);
+        }
+
+        if (isset($options['setup']) && is_callable($options['setup'])) {
+            $options['setup']($sandboxDir, $pubHtml, $ukkRapi, $stagingDir);
+        }
+
+        $selfScriptPath = $pubHtml . '/auto_extract.php';
+        file_put_contents($selfScriptPath, $script);
+
+        $requestMethod = $options['request_method'] ?? 'POST';
+        $postToken = array_key_exists('post_token', $options) ? $options['post_token'] : $token;
+        $runnerCode = "<?php\n"
+            . "\$_SERVER['REQUEST_METHOD'] = " . var_export($requestMethod, true) . ";\n";
+        if ($postToken !== null) {
+            $runnerCode .= "\$_POST['token'] = " . var_export($postToken, true) . ";\n";
+        }
+        $runnerCode .= "require __DIR__ . '/public_html/auto_extract.php';\n";
+
+        $runnerPath = $sandboxDir . '/runner.php';
+        file_put_contents($runnerPath, $runnerCode);
+
+        $output = [];
+        $exitCode = 0;
+
+        $snapshotUkkFiles = [];
+        if (is_dir($ukkRapi)) {
+            $preIt = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($ukkRapi, \RecursiveDirectoryIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::SELF_FIRST
+            );
+            foreach ($preIt as $preItem) {
+                $preRel = str_replace('\\', '/', substr($preItem->getPathname(), strlen($ukkRapi) + 1));
+                if ($preRel === 'storage' || str_starts_with($preRel, 'storage/')) {
+                    continue;
+                }
+                $snapshotUkkFiles[$preRel] = $preItem->isFile() ? hash_file('sha256', $preItem->getPathname()) : 'dir';
+            }
+        }
+
+        try {
+            exec('php ' . escapeshellarg($runnerPath) . ' 2>&1', $output, $exitCode);
+            $fullOutput = implode("\n", $output);
+
+            $storagePath = $pubHtml . '/storage';
+            $storageFiles = [];
+            if (is_dir($storagePath) && !is_link($storagePath)) {
+                $itStorage = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($storagePath, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($itStorage as $sItem) {
+                    if ($sItem->isFile()) {
+                        $rel = str_replace('\\', '/', substr($sItem->getPathname(), strlen($storagePath) + 1));
+                        $storageFiles[$rel] = file_get_contents($sItem->getPathname());
+                    }
+                }
+            }
+
+            $migratedPublicFiles = [];
+            $appPublicDir = $ukkRapi . '/storage/app/public';
+            if (is_dir($appPublicDir)) {
+                $itAppPub = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($appPublicDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($itAppPub as $pItem) {
+                    if ($pItem->isFile()) {
+                        $rel = str_replace('\\', '/', substr($pItem->getPathname(), strlen($appPublicDir) + 1));
+                        $migratedPublicFiles[$rel] = file_get_contents($pItem->getPathname());
+                    }
+                }
+            }
+
+            $extracted = [];
+            if (is_dir($ukkRapi)) {
+                $it = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($ukkRapi, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($it as $item) {
+                    $rel = str_replace('\\', '/', substr($item->getPathname(), strlen($ukkRapi) + 1));
+                    if ($rel === 'storage' || str_starts_with($rel, 'storage/')) {
+                        continue;
+                    }
+                    $currentSig = $item->isFile() ? hash_file('sha256', $item->getPathname()) : 'dir';
+                    if (!array_key_exists($rel, $snapshotUkkFiles) || $snapshotUkkFiles[$rel] !== $currentSig) {
+                        $extracted[] = $rel;
+                    }
+                }
+            }
+
+            return [
+                'output' => $fullOutput,
+                'exitCode' => $exitCode,
+                'extracted' => $extracted,
+                'stagingDirExists' => is_dir($stagingDir),
+                'zipInStagingExists' => file_exists($stagingDir . '/deploy_payload.zip'),
+                'zipInPublicExists' => file_exists($pubHtml . '/deploy_payload.zip'),
+                'selfFileExists' => file_exists($selfScriptPath),
+                'htaccessExists' => file_exists($stagingDir . '/.htaccess'),
+                'backupRootExists' => is_dir($stagingDir . '/pre_deploy_backup'),
+                'downFileExists' => file_exists($ukkRapi . '/storage/framework/down'),
+                'storageIsDir' => is_dir($storagePath) && !is_link($storagePath),
+                'storageIsLink' => is_link($storagePath),
+                'storageReadlink' => is_link($storagePath) ? readlink($storagePath) : null,
+                'storageFiles' => $storageFiles,
+                'migratedPublicFiles' => $migratedPublicFiles,
+                'existingAppPhp' => file_exists($ukkRapi . '/app/Existing.php') ? file_get_contents($ukkRapi . '/app/Existing.php') : null,
+                'existingIndexPhp' => file_exists($pubHtml . '/index.php') ? file_get_contents($pubHtml . '/index.php') : null,
+                'envContent' => file_exists($ukkRapi . '/.env') ? file_get_contents($ukkRapi . '/.env') : null,
+            ];
+        } finally {
+            // Bersihkan backup storage fisik di sandbox jika terbentuk (berada langsung di dalam $sandboxDir/storage_physical_backup_*)
+            if (is_link($pubHtml . '/storage')) {
+                @rmdir($pubHtml . '/storage') ?: @unlink($pubHtml . '/storage');
+            }
+            File::deleteDirectory($sandboxDir);
+        }
+    }
+
+    /**
+     * Uji 134: Struktur YAML workflow, branch main, relasi lokasi upload auto_extract.php, server-dir FTP, dan URL Stage 3 valid
+     */
+    public function test_workflow_yaml_structure_ftp_server_dir_consistency_and_stage3_url_relationship(): void
+    {
+        $wf = $this->parseAndValidateDeployWorkflow();
+
+        // 1. Trigger push wajib hanya mengarah ke branch main
+        $this->assertSame(['main'], $wf['branches'], 'Workflow deployment produksi wajib berjalan pada branch main.');
+
+        // Ambil step penting secara terstruktur
+        $stepsByName = $wf['stepsByName'];
+        $this->assertArrayHasKey('📦 Package App into ZIP', $stepsByName);
+        $this->assertArrayHasKey('🛡️ Stage 1: Upload Protection Shield via FTP', $stepsByName);
+        $this->assertArrayHasKey('🔍 Verify Staging Shield Active (HTTP 403 on Probe File)', $stepsByName);
+        $this->assertArrayHasKey('📦 Stage 2: Upload Payload ZIP via FTP', $stepsByName);
+        $this->assertArrayHasKey('⚡ Stage 3: Trigger Secure Extraction on cPanel', $stepsByName);
+
+        $pkgStep = $stepsByName['📦 Package App into ZIP'];
+        $stage1 = $stepsByName['🛡️ Stage 1: Upload Protection Shield via FTP'];
+        $verifyShield = $stepsByName['🔍 Verify Staging Shield Active (HTTP 403 on Probe File)'];
+        $stage2 = $stepsByName['📦 Stage 2: Upload Payload ZIP via FTP'];
+        $stage3 = $stepsByName['⚡ Stage 3: Trigger Secure Extraction on cPanel'];
+
+        // 2. Verifikasi urutan eksekusi workflow
+        $this->assertLessThan($stage1['index'], $pkgStep['index']);
+        $this->assertLessThan($verifyShield['index'], $stage1['index']);
+        $this->assertLessThan($stage2['index'], $verifyShield['index']);
+        $this->assertLessThan($stage3['index'], $stage2['index']);
+
+        // 3. Relasi lokasi penulisan auto_extract.php -> folder FTP Stage 1 & Stage 2 -> server-dir FTP
+        $pkgRun = $pkgStep['run'];
+        $this->assertMatchesRegularExpression(
+            "/cat\s+<<\s+'EOF'\s+>\s+deploy_package\/public_html\/auto_extract\.php/",
+            $pkgRun,
+            'Skrip auto_extract.php wajib dibuat pada deploy_package/public_html/auto_extract.php.'
+        );
+        $this->assertMatchesRegularExpression(
+            '/cp\s+deploy_package\/public_html\/auto_extract\.php\s+ftp_stage1_shield\/\s*$/m',
+            $pkgRun,
+            'Stage 1 wajib menyalin auto_extract.php ke root ftp_stage1_shield/ (bukan .deploy_staging).'
+        );
+        $this->assertMatchesRegularExpression(
+            '/cp\s+deploy_package\/public_html\/auto_extract\.php\s+ftp_stage2_payload\/\s*$/m',
+            $pkgRun,
+            'Stage 2 wajib menyalin auto_extract.php ke root ftp_stage2_payload/ agar sinkronisasi FTP tidak menghapusnya.'
+        );
+        $this->assertDoesNotMatchRegularExpression(
+            '/auto_extract\.php\s+ftp_stage[12]_[^\/]+\/\.deploy_staging/',
+            $pkgRun,
+            'auto_extract.php tidak boleh diletakkan ke dalam .deploy_staging yang diblokir .htaccess.'
+        );
+        $this->assertStringContainsString('Require all denied', $pkgRun);
+        $this->assertStringContainsString('Deny from all', $pkgRun);
+        $this->assertMatchesRegularExpression(
+            '/mv\s+deploy_payload\.zip\s+ftp_stage2_payload\/\.deploy_staging\//',
+            $pkgRun,
+            'deploy_payload.zip wajib ditempatkan di dalam folder .deploy_staging/ yang terlindungi.'
+        );
+
+        // 4. Stage 1 & Stage 2 FTP server-dir wajib identik ('public_html/') dan memetakan ke __DIR__ public_html
+        $this->assertSame('SamKirkland/FTP-Deploy-Action@v4.3.5', $stage1['uses']);
+        $this->assertSame('SamKirkland/FTP-Deploy-Action@v4.3.5', $stage2['uses']);
+        $this->assertSame('./ftp_stage1_shield/', $stage1['with']['local-dir'] ?? null);
+        $this->assertSame('./ftp_stage2_payload/', $stage2['with']['local-dir'] ?? null);
+
+        $stage1ServerDir = $stage1['with']['server-dir'] ?? null;
+        $stage2ServerDir = $stage2['with']['server-dir'] ?? null;
+        $this->assertSame('public_html/', $stage1ServerDir, 'Stage 1 FTP server-dir wajib menggunakan format public_html/.');
+        $this->assertSame($stage1ServerDir, $stage2ServerDir, 'Stage 1 dan Stage 2 FTP server-dir wajib konsisten 100%.');
+        $this->assertStringNotContainsString('/public_html/', (string) $stage1ServerDir);
+
+        // Pastikan relasi __DIR__ inside auto_extract.php konsisten dengan server-dir: public_html/
+        $script = $this->getProductionDeployScript();
+        $this->assertStringContainsString("\$stagingDir = __DIR__ . '/.deploy_staging';", $script);
+        $this->assertStringContainsString("\$ukkRapiRoot = realpath(__DIR__ . '/../ukk_rapi')", $script);
+        $this->assertStringContainsString("\$extractPath = realpath(__DIR__ . '/..');", $script);
+        $this->assertStringContainsString("\$storageLink = __DIR__ . '/storage';", $script);
+
+        // Pastikan Verify Shield mengecek HTTP 403 ke dalam /.deploy_staging/
+        $this->assertMatchesRegularExpression(
+            '/PROBE_URL="https:\/\/ahmad-rapi\.web\.id\/\.deploy_staging\/\$\{PROBE_FILENAME\}"/',
+            $verifyShield['run']
+        );
+        $this->assertStringContainsString('"${PROBE_HTTP_CODE}" != "403"', $verifyShield['run']);
+
+        // 5. Validasi Stage 3 curl command & relasi URL dengan lokasi upload root public_html
+        $stage3Run = $stage3['run'];
+        $this->assertDoesNotMatchRegularExpression(
+            '/\[https?:\/\/[^\]]+\]\(https?:\/\/[^\)]+\)/',
+            $stage3Run,
+            'Stage 3 tidak boleh mengandung URL dalam sintaks Markdown link.'
+        );
+        $this->assertMatchesRegularExpression(
+            '/RESPONSE=\$\(\s*curl\b.*?"(https:\/\/[^"]+)"\s*\)/s',
+            $stage3Run,
+            'Perintah curl Stage 3 wajib memiliki pasangan kurung RESPONSE=$(curl ... "URL") yang utuh dan valid.'
+        );
+
+        preg_match('/RESPONSE=\$\(\s*curl\b(.*?)\s+"([^"]+)"\s*\)/s', $stage3Run, $curlParts);
+        $this->assertCount(3, $curlParts, 'Gagal mengekstrak argumen curl dan URL pada Stage 3.');
+        $curlFlags = $curlParts[1];
+        $stage3Url = $curlParts[2];
+
+        $this->assertStringContainsString('--request POST', $curlFlags);
+        $this->assertStringContainsString('--proto "=https"', $curlFlags);
+        $this->assertStringContainsString('--proto-redir "=https"', $curlFlags);
+        $this->assertStringContainsString('--fail-with-body', $curlFlags);
+        $this->assertStringContainsString('--data-urlencode "token=${DEPLOY_TOKEN}"', $curlFlags);
+
+        $this->assertNotFalse(
+            filter_var($stage3Url, FILTER_VALIDATE_URL),
+            "URL Stage 3 '{$stage3Url}' wajib lulus validasi FILTER_VALIDATE_URL."
+        );
+        $parsedUrl = parse_url($stage3Url);
+        $this->assertIsArray($parsedUrl);
+        $this->assertSame('https', $parsedUrl['scheme'] ?? null);
+        $this->assertSame('ahmad-rapi.web.id', $parsedUrl['host'] ?? null);
+        $this->assertSame('/auto_extract.php', $parsedUrl['path'] ?? null);
+        $this->assertFalse(
+            str_contains((string) ($parsedUrl['path'] ?? ''), '.deploy_staging'),
+            'URL Stage 3 tidak boleh mengarah ke .deploy_staging karena direktori tersebut diblokir .htaccess dengan HTTP 403.'
+        );
+        $this->assertSame('https://ahmad-rapi.web.id/auto_extract.php', $stage3Url);
+    }
+
+    /**
+     * Uji 135: Analisis token PHP membuktikan definisi closure $cleanupStaging wajib mendahului setiap pemanggilan & capture use()
+     */
+    public function test_cleanup_staging_closure_is_defined_before_every_invocation_and_capture(): void
+    {
+        $script = $this->getProductionDeployScript();
+        $tokens = token_get_all($script);
+
+        $definitionTokenIdx = null;
+        $definitionLine = null;
+        $invocationLines = [];
+        $captureLines = [];
+
+        $significantTokens = [];
+        foreach ($tokens as $tok) {
+            if (is_array($tok) && in_array($tok[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            $significantTokens[] = $tok;
+        }
+
+        $count = count($significantTokens);
+        for ($i = 0; $i < $count; $i++) {
+            $tok = $significantTokens[$i];
+            if (!is_array($tok) || $tok[0] !== T_VARIABLE || $tok[1] !== '$cleanupStaging') {
+                continue;
+            }
+
+            $next = $significantTokens[$i + 1] ?? null;
+            $prev = $significantTokens[$i - 1] ?? null;
+
+            // Deteksi definisi: $cleanupStaging = function ...
+            if ($next === '=' && isset($significantTokens[$i + 2]) && is_array($significantTokens[$i + 2]) && $significantTokens[$i + 2][0] === T_FUNCTION) {
+                $this->assertNull(
+                    $definitionTokenIdx,
+                    'Closure $cleanupStaging tidak boleh didefinisikan berulang kali secara ambigu.'
+                );
+                $definitionTokenIdx = $i;
+                $definitionLine = $tok[2];
+                continue;
+            }
+
+            // Deteksi pemanggilan: $cleanupStaging( ... )
+            if ($next === '(') {
+                $invocationLines[] = ['tokenIdx' => $i, 'line' => $tok[2]];
+                continue;
+            }
+
+            // Deteksi capture dalam closure lain: use (..., $cleanupStaging, ...)
+            if (($prev === '(' || $prev === ',') && ($next === ',' || $next === ')')) {
+                $captureLines[] = ['tokenIdx' => $i, 'line' => $tok[2]];
+            }
+        }
+
+        $this->assertNotNull($definitionTokenIdx, 'Definisi closure $cleanupStaging = function (...) wajib ditemukan dalam auto_extract.php.');
+        $this->assertNotEmpty($invocationLines, 'Minimal harus terdapat pemanggilan $cleanupStaging(...) dalam auto_extract.php.');
+        $this->assertNotEmpty($captureLines, '$handleFailureAndRollback wajib menangkap $cleanupStaging melalui use (...).');
+
+        foreach ($invocationLines as $call) {
+            $this->assertGreaterThan(
+                $definitionTokenIdx,
+                $call['tokenIdx'],
+                "Pemanggilan \$cleanupStaging() pada baris skrip ~{$call['line']} ditemukan SEBELUM definisi pada baris ~{$definitionLine}."
+            );
+        }
+
+        foreach ($captureLines as $cap) {
+            $this->assertGreaterThan(
+                $definitionTokenIdx,
+                $cap['tokenIdx'],
+                "Capture \$cleanupStaging pada baris skrip ~{$cap['line']} ditemukan SEBELUM definisi pada baris ~{$definitionLine}."
+            );
+        }
+    }
+
+    /**
+     * Uji 136: Eksekusi nyata skrip saat scandir($storageLink) gagal (false) berjalan bersih tanpa fatal error & membersihkan staging
+     */
+    public function test_production_script_scandir_failure_invokes_defined_cleanup_staging_without_fatal_error(): void
+    {
+        $baseDir = sys_get_temp_dir() . '/rapi_scandir_live_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $zipPath = $baseDir . '/valid.zip';
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->addFromString('ukk_rapi/bootstrap/app.php', '<?php // app');
+        $zip->addFromString('ukk_rapi/vendor/autoload.php', '<?php // autoload');
+        $zip->addFromString('public_html/index.php', '<?php // index');
+        $zip->close();
+
+        $productionScript = $this->getProductionDeployScript();
+        $targetSnippet = '$initScan = scandir($storageLink);';
+        $this->assertStringContainsString(
+            $targetSnippet,
+            $productionScript,
+            'Skrip produksi wajib memiliki inisialisasi $initScan = scandir($storageLink);.'
+        );
+
+        $res = $this->runProductionDeployScriptDetailed($zipPath, [
+            'zipInStaging' => true,
+            'withStagingShieldFiles' => true,
+            'setup' => function (string $sandboxDir, string $pubHtml) {
+                @mkdir($pubHtml . '/storage', 0755, true);
+                file_put_contents($pubHtml . '/storage/preserved_photo.jpg', 'ORIGINAL_SCHOOL_PHOTO');
+            },
+            'scriptTransformer' => function (string $script) use ($targetSnippet) {
+                return str_replace($targetSnippet, '$initScan = false;', $script);
+            },
+        ]);
+
+        File::deleteDirectory($baseDir);
+
+        $this->assertStringContainsString('STORAGE_INSPECTION_FAILED: Gagal memindai direktori storage fisik awal', $res['output']);
+        $this->assertStringNotContainsString('Uncaught Error', $res['output']);
+        $this->assertStringNotContainsString('not callable', $res['output']);
+        $this->assertStringNotContainsString('Fatal error', $res['output']);
+
+        // Pastikan $cleanupStaging(false) benar-benar membersihkan .deploy_staging & auto_extract.php
+        $this->assertFalse($res['stagingDirExists'], 'Direktori .deploy_staging wajib terhapus oleh $cleanupStaging(false).');
+        $this->assertFalse($res['zipInStagingExists'], 'deploy_payload.zip wajib terhapus oleh $cleanupStaging(false).');
+        $this->assertFalse($res['selfFileExists'], 'auto_extract.php wajib terhapus oleh $cleanupStaging(false).');
+        $this->assertFalse($res['downFileExists'], 'Maintenance down tidak boleh tercipta saat gagal sebelum aktivasi.');
+
+        // Pastikan file fisik awal tetap aman 100%
+        $this->assertSame(['preserved_photo.jpg' => 'ORIGINAL_SCHOOL_PHOTO'], $res['storageFiles']);
+        $this->assertStringContainsString('ORIGINAL_APP_CODE', (string) $res['existingAppPhp']);
+    }
+
+    /**
+     * Uji 137: Eksekusi nyata skrip produksi (tanpa modifikasi) pada kondisi normal scandir($storageLink) dengan storage fisik awal
+     */
+    public function test_production_script_normal_scandir_proceeds_cleanly_with_physical_storage(): void
+    {
+        $baseDir = sys_get_temp_dir() . '/rapi_scandir_norm_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $validToken = 'normal_scandir_token_2026';
+        $zipPath = $baseDir . '/valid_encrypted.zip';
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->setPassword($validToken);
+        $zip->addFromString('ukk_rapi/bootstrap/app.php', '<?php // new app bootstrap');
+        $zip->addFromString('ukk_rapi/vendor/autoload.php', '<?php // new vendor');
+        $zip->addFromString('public_html/index.php', '<?php // updated index');
+        $zip->close();
+
+        $res = $this->runProductionDeployScriptDetailed($zipPath, [
+            'token' => $validToken,
+            'post_token' => $validToken,
+            'zipInStaging' => true,
+            'withStagingShieldFiles' => true,
+            'setup' => function (string $sandboxDir, string $pubHtml) {
+                @mkdir($pubHtml . '/storage', 0755, true);
+                file_put_contents($pubHtml . '/storage/legacy.jpg', 'LEGACY_PHOTO_DATA_2026');
+            },
+        ]);
+
+        File::deleteDirectory($baseDir);
+
+        $this->assertStringNotContainsString('STORAGE_INSPECTION_FAILED', $res['output']);
+        $this->assertStringNotContainsString('Uncaught Error', $res['output']);
+        $this->assertStringNotContainsString('not callable', $res['output']);
+        $this->assertFalse($res['downFileExists'], 'Maintenance mode wajib nonaktif baik saat DEPLOY_SUCCESS maupun saat rollback sukses.');
+        $this->assertFalse($res['zipInStagingExists'], 'deploy_payload.zip wajib dibersihkan setelah eksekusi selesai.');
+        $this->assertFalse($res['selfFileExists'], 'auto_extract.php wajib dihapus setelah eksekusi selesai.');
+
+        if (str_contains($res['output'], 'DEPLOY_SUCCESS')) {
+            // Lingkungan mendukung symlink (misal Linux CI / cPanel)
+            $this->assertTrue($res['storageIsLink']);
+            $this->assertSame('../ukk_rapi/storage/app/public', $res['storageReadlink']);
+            $this->assertSame(
+                ['legacy.jpg' => 'LEGACY_PHOTO_DATA_2026'],
+                $res['migratedPublicFiles']
+            );
+            $this->assertFalse($res['stagingDirExists']);
+        } else {
+            // Windows non-admin menolak symlink() secara OS -> mekanisme rollback memulihkan kondisi awal secara utuh
+            $this->assertStringContainsString('SYMLINK_FAILED', $res['output']);
+            $this->assertStringContainsString('[ROLLBACK_SUCCESSFUL]', $res['output']);
+            $this->assertTrue($res['storageIsDir']);
+            $this->assertSame(
+                ['legacy.jpg' => 'LEGACY_PHOTO_DATA_2026'],
+                $res['storageFiles']
+            );
+        }
+    }
+
+    /**
+     * Uji 138: Kewajiban DEPLOY_TOKEN, validasi HTTP POST, penolakan token salah/kosong, dan tidak ada token di log workflow
+     */
+    public function test_workflow_and_production_script_enforce_deploy_token_http_post_and_secret_safety(): void
+    {
+        $wf = $this->parseAndValidateDeployWorkflow();
+        $pkgStep = $wf['stepsByName']['📦 Package App into ZIP'];
+        $stage3 = $wf['stepsByName']['⚡ Stage 3: Trigger Secure Extraction on cPanel'];
+
+        // 1. Both Packaging and Stage 3 MUST bind DEPLOY_TOKEN from GitHub Secrets & guard empty values
+        $this->assertSame('${{ secrets.DEPLOY_TOKEN }}', $pkgStep['env']['DEPLOY_TOKEN'] ?? null);
+        $this->assertSame('${{ secrets.DEPLOY_TOKEN }}', $stage3['env']['DEPLOY_TOKEN'] ?? null);
+        $this->assertStringContainsString('if [ -z "$TOKEN_HASH" ] || [ "$TOKEN_HASH" = "$EMPTY_HASH" ]; then', $pkgStep['run']);
+        $this->assertStringContainsString('if [ -z "$DEPLOY_TOKEN" ]; then', $stage3['run']);
+        $this->assertMatchesRegularExpression('/sed\s+-i\s+"s\/__EXPECTED_TOKEN_HASH__\/\$\{TOKEN_HASH\}\/g"/', $pkgStep['run']);
+        $this->assertDoesNotMatchRegularExpression('/echo\s+.*(\$DEPLOY_TOKEN|\$TOKEN_HASH)/', $pkgStep['run']);
+        $this->assertDoesNotMatchRegularExpression('/echo\s+.*\$DEPLOY_TOKEN/', $stage3['run']);
+
+        // 2. Uji nyata pada auto_extract.php terhadap metode HTTP selain POST dan token tidak sah
+        $baseDir = sys_get_temp_dir() . '/rapi_auth_live_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $zipPath = $baseDir . '/payload.zip';
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->addFromString('ukk_rapi/app/Injected.php', '<?php // should never extract');
+        $zip->close();
+
+        $resGet = $this->runProductionDeployScriptDetailed($zipPath, [
+            'request_method' => 'GET',
+        ]);
+        $this->assertStringContainsString('Method Not Allowed', $resGet['output']);
+        $this->assertEmpty($resGet['extracted']);
+        $this->assertTrue($resGet['zipInStagingExists'], 'GET request ditolak sebelum menyentuh staging.');
+
+        $resBadToken = $this->runProductionDeployScriptDetailed($zipPath, [
+            'request_method' => 'POST',
+            'token' => 'expected_secret_token',
+            'post_token' => 'wrong_attacker_token',
+        ]);
+        $this->assertStringContainsString('Access Denied', $resBadToken['output']);
+        $this->assertEmpty($resBadToken['extracted']);
+
+        $resEmptyToken = $this->runProductionDeployScriptDetailed($zipPath, [
+            'request_method' => 'POST',
+            'token' => 'expected_secret_token',
+            'post_token' => '',
+        ]);
+        $this->assertStringContainsString('Access Denied', $resEmptyToken['output']);
+        $this->assertEmpty($resEmptyToken['extracted']);
+
+        File::deleteDirectory($baseDir);
+    }
+
+    /**
+     * Uji 139: Eksekusi nyata skrip produksi menolak varian .env & path traversal serta menjaga .env asli server utuh
+     */
+    public function test_production_script_blocks_env_variants_and_path_traversal_preserving_server_env(): void
+    {
+        $baseDir = sys_get_temp_dir() . '/rapi_sec_variants_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+
+        $attackPayloads = [
+            'env_root' => ['entry' => 'ukk_rapi/.env', 'expectedError' => 'ENV_FILE_FORBIDDEN'],
+            'env_public' => ['entry' => 'public_html/.env.local', 'expectedError' => 'ENV_FILE_FORBIDDEN'],
+            'env_nested' => ['entry' => 'ukk_rapi/config/.env.production', 'expectedError' => 'ENV_FILE_FORBIDDEN'],
+            'traversal_nested' => ['entry' => 'ukk_rapi/app/../../escaped.php', 'expectedError' => 'PATH_TRAVERSAL'],
+            'traversal_backslash' => ['entry' => 'public_html\\..\\..\\escaped.php', 'expectedError' => 'PATH_TRAVERSAL'],
+            'absolute_unix' => ['entry' => '/etc/passwd', 'expectedError' => 'ABSOLUTE_PATH'],
+        ];
+
+        foreach ($attackPayloads as $label => $spec) {
+            $zipPath = $baseDir . "/{$label}.zip";
+            $zip = new \ZipArchive();
+            $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+            $zip->addFromString($spec['entry'], 'MALICIOUS_PAYLOAD');
+            $zip->close();
+
+            $res = $this->runProductionDeployScriptDetailed($zipPath, [
+                'zipInStaging' => true,
+                'setup' => function (string $sandboxDir, string $pubHtml, string $ukkRapi) {
+                    file_put_contents($ukkRapi . '/.env', "APP_KEY=base64:SERVER_REAL_KEY\nDB_PASSWORD=real_secret\n");
+                },
+            ]);
+
+            $this->assertStringContainsString(
+                'SECURITY_VALIDATION_FAILED: ' . $spec['expectedError'],
+                $res['output'],
+                "Payload [{$label}] wajib ditolak dengan {$spec['expectedError']}."
+            );
+            $this->assertEmpty($res['extracted']);
+            $this->assertSame(
+                "APP_KEY=base64:SERVER_REAL_KEY\nDB_PASSWORD=real_secret\n",
+                $res['envContent'],
+                "Berkas .env produksi wajib utuh 100% setelah menolak [{$label}]."
+            );
+            $this->assertFalse($res['stagingDirExists'], 'Staging wajib dibersihkan saat validasi keamanan gagal.');
+            $this->assertFalse($res['selfFileExists']);
+
+            @unlink($zipPath);
+        }
+
+        File::deleteDirectory($baseDir);
+    }
+
+    /**
+     * Uji 140: Keutuhan mekanisme backup, verifikasi integritas SHA-256, rollback, dan cleanup pada eksekusi nyata skrip produksi
+     */
+    public function test_production_script_preserves_backup_sha256_integrity_rollback_and_cleanup(): void
+    {
+        $script = $this->getProductionDeployScript();
+
+        // Verifikasi struktural pengaman integritas SHA-256 pada backup dan rollback
+        $this->assertStringContainsString("\$mHash = hash_file('sha256', \$mItem->getPathname());", $script);
+        $this->assertStringContainsString('BACKUP_FAILED_ABORTING_DEPLOYMENT', $script);
+        $this->assertStringContainsString('backupManifest', $script);
+        $this->assertStringContainsString('restoreExactDirectory', $script);
+        $this->assertStringContainsString('handleFailureAndRollback', $script);
+
+        // Uji nyata rollback & pemulihan file awal saat ekstraksi gagal di tengah proses setelah backup selesai
+        $baseDir = sys_get_temp_dir() . '/rapi_rollback_live_' . uniqid();
+        @mkdir($baseDir, 0755, true);
+        $zipPath = $baseDir . '/encrypted_wrong_pass.zip';
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE));
+        $zip->setPassword('correct_password_only');
+        $zip->addFromString('ukk_rapi/app/Existing.php', '<?php return "OVERWRITTEN";');
+        $zip->addFromString('public_html/index.php', '<?php // OVERWRITTEN');
+        if (method_exists($zip, 'setEncryptionName')) {
+            $zip->setEncryptionName('ukk_rapi/app/Existing.php', \ZipArchive::EM_TRAD_PKWARE);
+            $zip->setEncryptionName('public_html/index.php', \ZipArchive::EM_TRAD_PKWARE);
+        }
+        $zip->close();
+
+        $res = $this->runProductionDeployScriptDetailed($zipPath, [
+            'token' => 'mismatch_password_token',
+            'zipInStaging' => true,
+            'withStagingShieldFiles' => true,
+        ]);
+
+        File::deleteDirectory($baseDir);
+
+        $this->assertStringContainsString('EXTRACT_FAILED', $res['output']);
+        $this->assertStringContainsString('[ROLLBACK_SUCCESSFUL]', $res['output']);
+        $this->assertStringContainsString('ORIGINAL_APP_CODE', (string) $res['existingAppPhp']);
+        $this->assertStringContainsString('ORIGINAL_INDEX', (string) $res['existingIndexPhp']);
+        $this->assertFalse($res['downFileExists'], 'Mode maintenance wajib dilepas ketika rollback berhasil sempurna.');
+        $this->assertFalse($res['zipInStagingExists'], 'deploy_payload.zip wajib dihapus saat $cleanupStaging(true).');
+        $this->assertFalse($res['selfFileExists'], 'auto_extract.php wajib dihapus saat $cleanupStaging(true).');
+        $this->assertTrue($res['backupRootExists'], 'pre_deploy_backup wajib dipertahankan oleh $cleanupStaging(true) untuk audit kegagalan.');
+    }
 }
 

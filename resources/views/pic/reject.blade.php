@@ -41,7 +41,9 @@
         <label for="rejection_reason">Keterangan Penolakan</label>
         <textarea name="rejection_reason" id="rejection_reason" class="form-control" rows="5" maxlength="2000" required>{{ old('rejection_reason') }}</textarea>
     </div>
-    <button type="submit" class="btn-login">Kirim Penolakan</button>
-    <a href="{{ route('pic.agenda') }}" class="btn btn-back">Batal</a>
+    <div class="form-actions">
+        <button type="submit" class="btn-login">Kirim Penolakan</button>
+        <a href="{{ route('pic.agenda') }}" class="btn btn-back">Batal</a>
+    </div>
 </form>
 @endsection

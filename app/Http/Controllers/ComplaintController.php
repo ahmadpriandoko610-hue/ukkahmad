@@ -26,6 +26,7 @@ class ComplaintController extends Controller
     {
         $complaints = Complaint::with([
                 'room',
+                'event',
                 'handler',
             ])
             ->visibleInActiveList()
@@ -64,13 +65,24 @@ class ComplaintController extends Controller
     {
         $agenda = null;
         if ($request->filled('agenda_id')) {
-            $agenda = Event::with('room')
-                ->whereKey($request->input('agenda_id'))
-                ->where('requester_id', Auth::id())
-                ->where('status', 'Disetujui')
-                ->first();
+            $agendaId = $request->input('agenda_id');
+            $isPositiveIntegerId = is_int($agendaId)
+                || (is_string($agendaId) && preg_match('/^[1-9]\d*$/', $agendaId) === 1);
 
-            if (!$agenda) {
+            if ($isPositiveIntegerId) {
+                $agenda = Event::with('room')
+                    ->whereKey((int) $agendaId)
+                    ->where('requester_id', Auth::id())
+                    ->where('status', 'Disetujui')
+                    ->first();
+            }
+
+            if (
+                !$agenda ||
+                !Auth::check() ||
+                (int) $agenda->requester_id !== (int) Auth::id() ||
+                $agenda->status !== 'Disetujui'
+            ) {
                 return back()->withInput()->withErrors([
                     'agenda_id' => 'Agenda tidak ditemukan atau belum disetujui.',
                 ]);
@@ -181,6 +193,7 @@ class ComplaintController extends Controller
 
         Complaint::create([
             'room_id' => $room->id,
+            'event_id' => $agenda?->id,
             'reporter_id' => Auth::id(),
             'description' => $request->description,
             'photo_path' => $photoPath,
@@ -298,43 +311,30 @@ class ComplaintController extends Controller
     }
 
     /**
+     * PIC membuka form edit informasi perbaikan pengaduan.
+     */
+    public function edit(Complaint $complaint)
+    {
+        $this->ensurePicCanManageComplaint($complaint);
+
+        $complaint->loadMissing([
+            'room.pic',
+            'event',
+            'reporter',
+            'handler',
+        ]);
+
+        return view('pic.complaints.edit', compact('complaint'));
+    }
+
+    /**
      * PIC memperbarui status pengaduan.
      */
     public function update(
         Request $request,
         Complaint $complaint
     ) {
-        /*
-        |--------------------------------------------------------------------------
-        | CEK ROLE PIC
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            !Auth::check() ||
-            Auth::user()->role !== 'pic'
-        ) {
-            abort(
-                403,
-                'Anda tidak memiliki akses untuk menangani pengaduan ini.'
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | CEK TANGGUNG JAWAB RUANGAN
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            !$complaint->room ||
-            $complaint->room->pic_id !== Auth::id()
-        ) {
-            abort(
-                403,
-                'Pengaduan ini bukan tanggung jawab Anda.'
-            );
-        }
+        $this->ensurePicCanManageComplaint($complaint);
 
         /*
         |--------------------------------------------------------------------------
@@ -371,7 +371,9 @@ class ComplaintController extends Controller
 
         $oldStatus = $complaint->status_repair;
         $newStatus = $request->status_repair;
-        $repairNote = $request->input('repair_note') ?? ($newStatus === 'Sudah Diperbaiki' ? $complaint->repair_note : null);
+        $repairNote = $request->exists('repair_note')
+            ? $request->input('repair_note')
+            : ($newStatus === 'Sudah Diperbaiki' ? $complaint->repair_note : null);
 
         $complaint->update([
             'status_repair' => $newStatus,
@@ -398,12 +400,35 @@ class ComplaintController extends Controller
             'is_read' => false,
         ]);
 
+        $redirectRoute = $request->input('redirect_to') === 'report'
+            ? 'pic.complaints.report'
+            : 'pic.complaints';
+
         return redirect()
-            ->route('pic.complaints')
+            ->route($redirectRoute)
             ->with(
                 'success',
                 'Status pengaduan berhasil diperbarui.'
             );
+    }
+
+    private function ensurePicCanManageComplaint(Complaint $complaint): void
+    {
+        if (!Auth::check() || Auth::user()->role !== 'pic') {
+            abort(
+                403,
+                'Anda tidak memiliki akses untuk menangani pengaduan ini.'
+            );
+        }
+
+        $complaint->loadMissing('room');
+
+        if (!$complaint->room || $complaint->room->pic_id !== Auth::id()) {
+            abort(
+                403,
+                'Pengaduan ini bukan tanggung jawab Anda.'
+            );
+        }
     }
 
     /*

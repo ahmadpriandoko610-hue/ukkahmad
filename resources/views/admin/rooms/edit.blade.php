@@ -148,11 +148,10 @@
             name="pic_id"
             id="pic_id"
             class="form-control"
-            required
         >
 
             <option value="">
-                -- Pilih PIC Ruangan --
+                -- Tidak Ada PIC / Lepaskan PIC --
             </option>
 
             @foreach ($pics as $pic)
@@ -167,6 +166,8 @@
             @endforeach
 
         </select>
+
+        <small class="form-help">Kosongkan pilihan jika ingin melepaskan PIC penanggung jawab ruangan.</small>
 
 
         @error('pic_id')
@@ -201,14 +202,16 @@
 
     {{-- BUTTON --}}
 
-    <button
-        type="submit"
-        class="btn-login"
-    >
-        Update
-    </button>
+    <div class="form-actions">
+        <button
+            type="submit"
+            class="btn-login"
+        >
+            Update
+        </button>
 
-    <a href="{{ route('rooms.index') }}" class="btn btn-back">Kembali</a>
+        <a href="{{ route('rooms.index') }}" class="btn btn-back">Kembali</a>
+    </div>
 
 </form>
 
