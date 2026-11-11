@@ -44,8 +44,7 @@
     </div>
 
     @php
-        $initialRole = old('role', $user->role);
-        $canHaveWhatsApp = in_array($initialRole, ['guru', 'pic'], true);
+        $isPic = old('role', $user->role) === 'pic';
     @endphp
 
     <div class="form-group">
@@ -55,36 +54,16 @@
             name="phone"
             id="phone"
             class="form-control"
-            value="{{ $canHaveWhatsApp ? old('phone', $user->phone) : '' }}"
-            placeholder="{{ $canHaveWhatsApp ? 'Contoh: 081234567890 atau +6281234567890' : 'Khusus untuk Guru / Organisasi dan PIC' }}"
-            {{ $canHaveWhatsApp ? '' : 'disabled' }}
-            style="{{ $canHaveWhatsApp ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
+            value="{{ $isPic ? old('phone', $user->phone) : '' }}"
+            placeholder="{{ $isPic ? 'Contoh: 081234567890' : 'Khusus untuk PIC' }}"
+            {{ $isPic ? '' : 'disabled' }}
+            style="{{ $isPic ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
         >
-        <small id="phoneHelp">{{ $canHaveWhatsApp ? 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 62..., atau +62...).' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.' }}</small>
+        <small id="phoneHelp">{{ $isPic ? 'Diisi khususnya untuk user dengan role PIC.' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.' }}</small>
         @error('phone')
             <small class="form-error">{{ $message }}</small>
         @enderror
     </div>
-
-    @if($user->role === 'guru')
-        <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; font-size: 13.5px; color: #334155;">
-            <strong>Status Persetujuan Notifikasi WhatsApp Guru (Read-Only):</strong><br>
-            <span>Nomor Tersamar: <code>{{ $user->masked_phone ?? '-' }}</code></span><br>
-            <span>Status:
-                @if($user->hasWhatsAppConsent())
-                    <strong style="color: #15803d;">Sudah Menyetujui</strong>
-                    @if($user->whatsapp_opt_in_at)
-                        (sejak {{ $user->whatsapp_opt_in_at->timezone('Asia/Jakarta')->format('d-m-Y H:i') }} WIB)
-                    @endif
-                @else
-                    <strong style="color: #b45309;">Belum Menyetujui</strong>
-                @endif
-            </span><br>
-            <small style="color: #64748b;">
-                Persetujuan hanya dapat diberikan atau dicabut secara mandiri oleh Guru melalui halaman Pengaturan Notifikasi WhatsApp. Jika Admin mengubah nomor WhatsApp Guru, persetujuan lama otomatis dicabut.
-            </small>
-        </div>
-    @endif
 
     <div class="form-group">
         <label for="password">Password Baru</label>
@@ -156,28 +135,28 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (roleSelect && phoneInput) {
         function updateWhatsAppField() {
-            const canHaveWhatsApp = roleSelect.value === 'pic' || roleSelect.value === 'guru';
+            const isPic = roleSelect.value === 'pic';
 
-            if (canHaveWhatsApp) {
+            if (isPic) {
                 phoneInput.disabled = false;
                 phoneInput.readOnly = false;
-                phoneInput.placeholder = 'Contoh: 081234567890 atau +6281234567890';
+                phoneInput.placeholder = 'Contoh: 081234567890';
                 phoneInput.style.backgroundColor = '';
                 phoneInput.style.cursor = '';
                 phoneInput.style.color = '';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 62..., atau +62...).';
+                    phoneHelp.textContent = 'Diisi khususnya untuk user dengan role PIC.';
                 }
             } else {
                 phoneInput.value = '';
                 phoneInput.disabled = true;
                 phoneInput.readOnly = true;
-                phoneInput.placeholder = 'Khusus untuk Guru / Organisasi dan PIC';
+                phoneInput.placeholder = 'Khusus untuk PIC';
                 phoneInput.style.backgroundColor = '#f1f5f9';
                 phoneInput.style.cursor = 'not-allowed';
                 phoneInput.style.color = '#94a3b8';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.';
+                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.';
                 }
             }
         }
@@ -185,13 +164,13 @@ document.addEventListener('DOMContentLoaded', function () {
         roleSelect.addEventListener('change', updateWhatsAppField);
 
         phoneInput.addEventListener('keydown', function (e) {
-            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
+            if (roleSelect.value !== 'pic') {
                 e.preventDefault();
             }
         });
 
         phoneInput.addEventListener('paste', function (e) {
-            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
+            if (roleSelect.value !== 'pic') {
                 e.preventDefault();
             }
         });

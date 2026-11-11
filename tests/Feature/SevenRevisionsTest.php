@@ -7,7 +7,6 @@ use App\Models\Event;
 use App\Models\Room;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -303,36 +302,13 @@ class SevenRevisionsTest extends TestCase
         }
     }
 
-    public function test_room_change_dispatches_whatsapp_only_when_room_changes_and_handles_unconfigured_gateway(): void
+    public function test_room_change_updates_event_creates_internal_notification_without_whatsapp_calls(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
-            $this->guru->grantWhatsAppConsent('guru_self_service', '083333333333')->save();
-
-            config([
-                'services.whatsapp.enabled' => true,
-                'services.whatsapp.driver' => 'meta_cloud_api',
-                'services.whatsapp.dry_run' => false,
-                'services.whatsapp.require_consent' => true,
-                'services.whatsapp.test_allowlist_only' => false,
-                'services.whatsapp.graph_base_url' => 'https://graph.facebook.com',
-                'services.whatsapp.graph_version' => 'v21.0',
-                'services.whatsapp.phone_number_id' => '556677889900',
-                'services.whatsapp.access_token' => 'meta-token-seven-rev',
-                'services.whatsapp.template_name' => 'notifikasi_pemindahan_ruangan',
-                'services.whatsapp.template_language' => 'id',
-            ]);
-
             Http::preventStrayRequests();
-            Http::fake([
-                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
-                    'messaging_product' => 'whatsapp',
-                    'messages' => [
-                        ['id' => 'wamid.HBgMseven001'],
-                    ],
-                ], 200),
-            ]);
+            Http::fake();
 
             $event = Event::create([
                 'event_name' => 'Rapat OSIS',
@@ -346,17 +322,29 @@ class SevenRevisionsTest extends TestCase
                 'approved_by' => $this->admin->id,
             ]);
 
-            // 1. Pindah ruangan via web memicu WA HANYA ke Guru pemilik agenda (PIC A & PIC B tidak dikirim)
+            // Halaman detail agenda & form pindah ruangan tidak menampilkan komponen WhatsApp otomatis
+            $this->actingAs($this->admin)->get(route('events.show', $event))
+                ->assertOk()
+                ->assertDontSeeText('Riwayat Status Notifikasi WhatsApp Pemindahan Ruangan');
+
+            $this->actingAs($this->admin)->get(route('events.move.form', $event))
+                ->assertOk()
+                ->assertDontSeeText('Status Notifikasi WhatsApp Pemilik Agenda');
+
+            // Sidebar guru tidak lagi menampilkan menu Notifikasi WhatsApp
+            $this->actingAs($this->guru)->get(route('dashboard.guru'))
+                ->assertOk()
+                ->assertDontSeeText('Notifikasi WhatsApp');
+
+            // 1. Pindah ruangan via web berhasil dengan pesan sukses normal dan membuat ScheduleNotification
             $moveResponse = $this->actingAs($this->admin)->put(route('events.move', $event), [
+                'current_room_id' => $this->roomA->id,
                 'room_id' => $this->roomB->id,
                 'move_reason' => 'Aula dipakai upacara dadakan',
             ]);
 
             $moveResponse->assertRedirect(route('agenda.index'));
-            $moveResponse->assertSessionHas(
-                'success',
-                'Ruangan agenda berhasil dipindahkan, notifikasi internal telah dibuat, dan notifikasi WhatsApp diterima antrean Meta Cloud API (status: accepted; menunggu pengiriman ke perangkat Guru).'
-            );
+            $moveResponse->assertSessionHas('success', 'Ruangan agenda berhasil dipindahkan.');
             $moveResponse->assertSessionMissing('warning');
 
             $this->assertDatabaseHas('events', [
@@ -364,104 +352,63 @@ class SevenRevisionsTest extends TestCase
                 'room_id' => $this->roomB->id,
                 'move_reason' => 'Aula dipakai upacara dadakan',
             ]);
+            $this->assertDatabaseHas('schedule_notifications', [
+                'event_id' => $event->id,
+                'user_id' => $this->guru->id,
+                'title' => 'Ruangan agenda dipindahkan',
+            ]);
 
-            Http::assertSentCount(1);
-            Http::assertSent(function ($request) {
-                $data = $request->data();
-                $params = array_column((array) data_get($data, 'template.components.0.parameters', []), 'text');
+            Http::assertNothingSent();
 
-                return $request->url() === 'https://graph.facebook.com/v21.0/556677889900/messages'
-                    && ($data['to'] ?? '') === '6283333333333'
-                    && data_get($data, 'template.name') === 'notifikasi_pemindahan_ruangan'
-                    && $params === [
-                        'Rapat OSIS',
-                        '12 November 2026',
-                        '08:15 - 09:45 WIB',
-                        'Aula Utama',
-                        'LAB 1',
-                        'Aula dipakai upacara dadakan',
-                    ];
-            });
-            Http::assertNotSent(fn ($request) => in_array($request->data()['to'] ?? '', ['6281111111111', '6282222222222'], true));
-
-            // 2. Edit agenda tanpa mengubah ruangan tidak mengirim WA lagi
-            Http::fake();
+            // 2. Edit agenda tanpa mengubah ruangan berhasil tanpa mengirim request eksternal apa pun
             $noRoomChangeResponse = $this->actingAs($this->admin)->put(route('agenda.update', $event), [
                 'judul' => 'Rapat OSIS Revisi Judul',
                 'tanggal' => '2026-11-12',
                 'tanggal_selesai' => '2026-11-12',
                 'sesi_mulai' => 2,
                 'sesi_selesai' => 3,
+                'current_room_id' => $this->roomB->id,
                 'ruangan_id' => $this->roomB->id,
                 'keterangan' => 'Update keterangan saja',
             ]);
 
             $noRoomChangeResponse->assertRedirect(route('agenda.index'));
+            $noRoomChangeResponse->assertSessionHas('success', 'Agenda berhasil diperbarui.');
+            $noRoomChangeResponse->assertSessionMissing('warning');
             Http::assertNothingSent();
 
-            // 3. Pindah ruangan oleh Admin melalui API memicu WA ke Guru pemilik agenda
-            Http::fake([
-                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
-                    'messaging_product' => 'whatsapp',
-                    'messages' => [
-                        ['id' => 'wamid.HBgMseven002'],
-                    ],
-                ], 200),
-            ]);
-
+            // 3. Pindah ruangan oleh Admin melalui API berhasil normal tanpa payload whatsapp_notification
             $apiMove = $this->actingAsApiUser($this->admin)
                 ->putJson("/api/agenda/{$event->id}/pindah-ruangan", [
+                    'current_room_id' => $this->roomB->id,
                     'ruangan_id' => $this->roomA->id,
                     'alasan' => 'Kembali ke Aula',
                 ]);
 
             $apiMove->assertOk()
                 ->assertJsonPath('success', true)
-                ->assertJsonPath('whatsapp_notification.status', 'accepted');
+                ->assertJsonPath('message', 'Ruangan agenda berhasil dipindahkan.')
+                ->assertJsonMissingPath('whatsapp_notification');
 
-            Http::assertSentCount(1);
-            Http::assertSent(fn ($request) => ($request->data()['to'] ?? '') === '6283333333333');
-
-            // 4. Meta Cloud API belum dikonfigurasi memberi warning jujur dan tidak mengklaim terkirim
-            config([
-                'services.whatsapp.phone_number_id' => '',
-                'services.whatsapp.access_token' => '',
-            ]);
-            Http::fake();
-
-            $unconfiguredMove = $this->actingAs($this->admin)->put(route('events.move', $event), [
-                'room_id' => $this->roomB->id,
-                'move_reason' => 'Perlu proyektor lab',
+            $this->assertDatabaseHas('events', [
+                'id' => $event->id,
+                'room_id' => $this->roomA->id,
+                'move_reason' => 'Kembali ke Aula',
             ]);
 
-            $unconfiguredMove->assertRedirect(route('agenda.index'));
-            $unconfiguredMove->assertSessionHas('warning');
             Http::assertNothingSent();
         } finally {
             Carbon::setTestNow();
         }
     }
 
-    public function test_whatsapp_gateway_failure_does_not_rollback_room_change(): void
+    public function test_room_move_edit_and_stale_state_checks_work_cleanly(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
-            $this->guru->grantWhatsAppConsent('guru_self_service', '083333333333')->save();
-
-            config([
-                'services.whatsapp.enabled' => true,
-                'services.whatsapp.driver' => 'meta_cloud_api',
-                'services.whatsapp.dry_run' => false,
-                'services.whatsapp.require_consent' => true,
-                'services.whatsapp.test_allowlist_only' => false,
-                'services.whatsapp.graph_base_url' => 'https://graph.facebook.com',
-                'services.whatsapp.graph_version' => 'v21.0',
-                'services.whatsapp.phone_number_id' => '556677889900',
-                'services.whatsapp.access_token' => 'meta-token-seven-rev',
-                'services.whatsapp.template_name' => 'notifikasi_pemindahan_ruangan',
-                'services.whatsapp.template_language' => 'id',
-            ]);
+            Http::preventStrayRequests();
+            Http::fake();
 
             $event = Event::create([
                 'event_name' => 'Simulasi UN',
@@ -475,22 +422,22 @@ class SevenRevisionsTest extends TestCase
                 'approved_by' => $this->admin->id,
             ]);
 
-            Http::preventStrayRequests();
-
-            // Meta Graph API mengembalikan HTTP 500
-            Http::fake([
-                'https://graph.facebook.com/v21.0/556677889900/messages' => Http::response([
-                    'error' => ['message' => 'Meta service unavailable', 'code' => 2],
-                ], 500),
-            ]);
-
-            $response = $this->actingAs($this->admin)->put(route('events.move', $event), [
-                'room_id' => $this->roomB->id,
+            // Pemindahan ruangan melalui form edit agenda (agenda.update) juga membuat ScheduleNotification
+            $updateMoveResponse = $this->actingAs($this->admin)->put(route('agenda.update', $event), [
+                'judul' => 'Simulasi UN',
+                'tanggal' => '2026-11-16',
+                'tanggal_selesai' => '2026-11-16',
+                'sesi_mulai' => 1,
+                'sesi_selesai' => 3,
+                'current_room_id' => $this->roomA->id,
+                'ruangan_id' => $this->roomB->id,
                 'move_reason' => 'Pemeliharaan AC Aula',
+                'keterangan' => 'Agenda simulasi ujian',
             ]);
 
-            $response->assertRedirect(route('agenda.index'));
-            $response->assertSessionHas('warning');
+            $updateMoveResponse->assertRedirect(route('agenda.index'));
+            $updateMoveResponse->assertSessionHas('success', 'Agenda berhasil diperbarui dan notifikasi internal telah dibuat.');
+            $updateMoveResponse->assertSessionMissing('warning');
 
             $this->assertDatabaseHas('events', [
                 'id' => $event->id,
@@ -500,30 +447,50 @@ class SevenRevisionsTest extends TestCase
             $this->assertDatabaseHas('schedule_notifications', [
                 'event_id' => $event->id,
                 'user_id' => $this->guru->id,
+                'title' => 'Ruangan agenda dipindahkan',
             ]);
 
-            // Meta Graph API melempar ConnectionException pada API moveRoom
-            Http::swap(new \Illuminate\Http\Client\Factory());
-            Http::preventStrayRequests();
-            Http::fake([
-                'https://graph.facebook.com/v21.0/556677889900/messages' => fn () => throw new ConnectionException('Connection timeout'),
-            ]);
-
-            $apiResponse = $this->actingAsApiUser($this->admin)
-                ->putJson("/api/agenda/{$event->id}/pindah-ruangan", [
-                    'ruangan_id' => $this->roomA->id,
-                    'alasan' => 'Koneksi gateway sedang gangguan',
+            // Stale current_room_id ditolak dengan aman pada Web maupun API
+            $staleWebMove = $this->actingAs($this->admin)
+                ->from(route('events.move.form', $event))
+                ->put(route('events.move', $event), [
+                    'current_room_id' => $this->roomA->id, // sudah kadaluarsa karena sekarang di roomB
+                    'room_id' => $this->roomA->id,
+                    'move_reason' => 'Permintaan usang',
                 ]);
 
-            $apiResponse->assertOk()
+            $staleWebMove->assertRedirect(route('events.move.form', $event));
+            $staleWebMove->assertSessionHasErrors('room_id');
+
+            $staleApiMove = $this->actingAsApiUser($this->admin)
+                ->putJson("/api/agenda/{$event->id}/pindah-ruangan", [
+                    'current_room_id' => $this->roomA->id, // sudah kadaluarsa
+                    'ruangan_id' => $this->roomA->id,
+                    'alasan' => 'Permintaan usang API',
+                ]);
+
+            $staleApiMove->assertStatus(409)
+                ->assertJsonPath('success', false);
+
+            // Pindah ruangan API dengan current_room_id terbaru berhasil
+            $freshApiMove = $this->actingAsApiUser($this->admin)
+                ->putJson("/api/agenda/{$event->id}/pindah-ruangan", [
+                    'current_room_id' => $this->roomB->id,
+                    'ruangan_id' => $this->roomA->id,
+                    'alasan' => 'Perbaikan Aula selesai',
+                ]);
+
+            $freshApiMove->assertOk()
                 ->assertJsonPath('success', true)
-                ->assertJsonPath('whatsapp_notification.status', 'ambiguous_timeout');
+                ->assertJsonPath('message', 'Ruangan agenda berhasil dipindahkan.');
 
             $this->assertDatabaseHas('events', [
                 'id' => $event->id,
                 'room_id' => $this->roomA->id,
-                'move_reason' => 'Koneksi gateway sedang gangguan',
+                'move_reason' => 'Perbaikan Aula selesai',
             ]);
+
+            Http::assertNothingSent();
         } finally {
             Carbon::setTestNow();
         }

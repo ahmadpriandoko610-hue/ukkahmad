@@ -48,8 +48,7 @@
     </div>
 
     @php
-        $initialRole = old('role', 'admin');
-        $canHaveWhatsApp = in_array($initialRole, ['guru', 'pic'], true);
+        $isPic = old('role', 'admin') === 'pic';
     @endphp
 
     <div class="form-group">
@@ -59,13 +58,12 @@
             name="phone"
             id="phone"
             class="form-control"
-            value="{{ $canHaveWhatsApp ? old('phone') : '' }}"
-            placeholder="{{ $canHaveWhatsApp ? 'Contoh: 081234567890 atau +6281234567890' : 'Khusus untuk Guru / Organisasi dan PIC' }}"
-            {{ $canHaveWhatsApp ? '' : 'disabled' }}
-            style="{{ $canHaveWhatsApp ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
+            value="{{ $isPic ? old('phone') : '' }}"
+            placeholder="{{ $isPic ? 'Contoh: 081234567890' : 'Khusus untuk PIC' }}"
+            {{ $isPic ? '' : 'disabled' }}
+            style="{{ $isPic ? '' : 'background-color: #f1f5f9; cursor: not-allowed; color: #94a3b8;' }}"
         >
-        <small id="phoneHelp">{{ $canHaveWhatsApp ? 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 62..., atau +62...).' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.' }}</small>
-        <small style="display: block; color: #64748b; margin-top: 4px;">Khusus role Guru / Organisasi, persetujuan penerimaan notifikasi pemindahan ruangan diberikan secara mandiri oleh Guru setelah login.</small>
+        <small id="phoneHelp">{{ $isPic ? 'Diisi khususnya untuk user dengan role PIC.' : 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.' }}</small>
         @error('phone')
             <small class="form-error">{{ $message }}</small>
         @enderror
@@ -138,28 +136,28 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (roleSelect && phoneInput) {
         function updateWhatsAppField() {
-            const canHaveWhatsApp = roleSelect.value === 'pic' || roleSelect.value === 'guru';
+            const isPic = roleSelect.value === 'pic';
 
-            if (canHaveWhatsApp) {
+            if (isPic) {
                 phoneInput.disabled = false;
                 phoneInput.readOnly = false;
-                phoneInput.placeholder = 'Contoh: 081234567890 atau +6281234567890';
+                phoneInput.placeholder = 'Contoh: 081234567890';
                 phoneInput.style.backgroundColor = '';
                 phoneInput.style.cursor = '';
                 phoneInput.style.color = '';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Diisi untuk user dengan role Guru / Organisasi atau PIC (format 08..., 62..., atau +62...).';
+                    phoneHelp.textContent = 'Diisi khususnya untuk user dengan role PIC.';
                 }
             } else {
                 phoneInput.value = '';
                 phoneInput.disabled = true;
                 phoneInput.readOnly = true;
-                phoneInput.placeholder = 'Khusus untuk Guru / Organisasi dan PIC';
+                phoneInput.placeholder = 'Khusus untuk PIC';
                 phoneInput.style.backgroundColor = '#f1f5f9';
                 phoneInput.style.cursor = 'not-allowed';
                 phoneInput.style.color = '#94a3b8';
                 if (phoneHelp) {
-                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role Guru / Organisasi atau PIC.';
+                    phoneHelp.textContent = 'Nomor WhatsApp hanya dapat diisi untuk user dengan role PIC.';
                 }
             }
         }
@@ -167,13 +165,13 @@ document.addEventListener('DOMContentLoaded', function () {
         roleSelect.addEventListener('change', updateWhatsAppField);
 
         phoneInput.addEventListener('keydown', function (e) {
-            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
+            if (roleSelect.value !== 'pic') {
                 e.preventDefault();
             }
         });
 
         phoneInput.addEventListener('paste', function (e) {
-            if (roleSelect.value !== 'pic' && roleSelect.value !== 'guru') {
+            if (roleSelect.value !== 'pic') {
                 e.preventDefault();
             }
         });

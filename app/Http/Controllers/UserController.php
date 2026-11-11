@@ -36,19 +36,18 @@ class UserController extends Controller
      */
     public function store(Request $request)
     {
-        $canHaveWhatsApp = User::canHaveWhatsAppPhone($request->role);
+        $isPic = $request->role === 'pic';
 
         $request->validate([
             'name' => 'required',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|min:6',
             'role' => 'required|in:admin,pic,guru,siswa',
-            'phone' => $canHaveWhatsApp ? $this->whatsAppPhoneValidationRules() : 'nullable',
-        ], $this->whatsAppValidationMessages());
+            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
+        ]);
 
-        $phone = $canHaveWhatsApp
-            ? User::normalizePhoneNumber($request->filled('phone') ? (string) $request->phone : null)
-            : null;
+        $rawPhone = trim((string) $request->phone);
+        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
 
         User::create([
             'name' => $request->name,
@@ -56,9 +55,6 @@ class UserController extends Controller
             'password' => bcrypt($request->password),
             'role' => $request->role,
             'phone' => $phone,
-            'whatsapp_opt_in' => false,
-            'whatsapp_opt_in_at' => null,
-            'whatsapp_opt_in_source' => null,
         ]);
 
         return redirect()->route('users.index')
@@ -86,18 +82,17 @@ class UserController extends Controller
      */
     public function update(Request $request, User $user)
     {
-        $canHaveWhatsApp = User::canHaveWhatsAppPhone($request->role);
+        $isPic = $request->role === 'pic';
 
         $request->validate([
             'name' => 'required',
             'email' => 'required|email|unique:users,email,' . $user->id,
             'role' => 'required|in:admin,pic,guru,siswa',
-            'phone' => $canHaveWhatsApp ? $this->whatsAppPhoneValidationRules() : 'nullable',
-        ], $this->whatsAppValidationMessages());
+            'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
+        ]);
 
-        $phone = $canHaveWhatsApp
-            ? User::normalizePhoneNumber($request->filled('phone') ? (string) $request->phone : null)
-            : null;
+        $rawPhone = trim((string) $request->phone);
+        $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
 
         $data = [
             'name' => $request->name,
@@ -114,37 +109,6 @@ class UserController extends Controller
 
         return redirect()->route('users.index')
                          ->with('success', 'Data user berhasil diperbarui.');
-    }
-
-    /**
-     * Aturan validasi nomor WhatsApp untuk role guru dan pic.
-     *
-     * @return array<int, mixed>
-     */
-    private function whatsAppPhoneValidationRules(): array
-    {
-        return [
-            'nullable',
-            'string',
-            'max:25',
-            function (string $attribute, mixed $value, \Closure $fail): void {
-                $raw = trim((string) $value);
-                if ($raw !== '' && User::normalizePhoneNumber($raw) === null) {
-                    $fail('Format nomor WhatsApp tidak valid. Gunakan format 08..., 628..., atau +628... dengan 10-14 digit lokal.');
-                }
-            },
-        ];
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function whatsAppValidationMessages(): array
-    {
-        return [
-            'phone.string' => 'Nomor WhatsApp harus berupa teks.',
-            'phone.max' => 'Nomor WhatsApp maksimal 25 karakter.',
-        ];
     }
 
     /**

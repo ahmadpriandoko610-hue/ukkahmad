@@ -73,8 +73,6 @@
             <th>Nama</th>
             <th>Email</th>
             <th>Role</th>
-            <th>WhatsApp (Tersamar)</th>
-            <th>Persetujuan Notifikasi WA</th>
             <th width="180">Aksi</th>
         </tr>
     </thead>
@@ -88,32 +86,6 @@
             <td>{{ $user->name }}</td>
             <td>{{ $user->email }}</td>
             <td>{{ $user->role_label }}</td>
-            <td>
-                @if(in_array($user->role, ['guru', 'pic'], true) && $user->masked_phone)
-                    <code>{{ $user->masked_phone }}</code>
-                @else
-                    <span style="color: #94a3b8;">-</span>
-                @endif
-            </td>
-            <td>
-                @if($user->role === 'guru')
-                    @if($user->hasWhatsAppConsent())
-                        <span class="badge-success">Sudah Menyetujui</span>
-                        @if($user->whatsapp_opt_in_at)
-                            <br>
-                            <small style="color: #475569;">
-                                {{ $user->whatsapp_opt_in_at->timezone('Asia/Jakarta')->format('d-m-Y H:i') }} WIB
-                            </small>
-                        @endif
-                    @else
-                        <span class="badge-warning">Belum Menyetujui</span>
-                    @endif
-                @elseif($user->role === 'pic')
-                    <small style="color: #64748b;">Khusus Pengaduan PIC</small>
-                @else
-                    <span style="color: #94a3b8;">-</span>
-                @endif
-            </td>
 
             <td class="room-actions-cell">
 

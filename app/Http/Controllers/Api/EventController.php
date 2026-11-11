@@ -7,11 +7,9 @@ use App\Models\Event;
 use App\Models\Room;
 use App\Models\ScheduleNotification;
 use App\Models\User;
-use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
@@ -588,7 +586,6 @@ class EventController extends Controller
 
         $errorResponse = null;
         $movedEvent = null;
-        $waResult = null;
 
         DB::transaction(function () use (
             $id,
@@ -596,8 +593,7 @@ class EventController extends Controller
             $submittedCurrentRoomId,
             $reason,
             &$errorResponse,
-            &$movedEvent,
-            &$waResult
+            &$movedEvent
         ): void {
             /** @var Event|null $lockedEvent */
             $lockedEvent = Event::query()->whereKey($id)->lockForUpdate()->first();
@@ -679,16 +675,12 @@ class EventController extends Controller
                 return;
             }
 
-            $oldRoom = Room::with('pic')->find($oldRoomId);
+            $oldRoom = Room::find($oldRoomId);
             $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
-            $nextVersion = ((int) ($lockedEvent->room_move_version ?? 0)) + 1;
-            $transitionId = (string) Str::uuid();
 
             $lockedEvent->update([
                 'room_id' => $room->id,
                 'move_reason' => $reason,
-                'room_move_version' => $nextVersion,
-                'last_room_move_transition_id' => $transitionId,
             ]);
 
             ScheduleNotification::create([
@@ -703,40 +695,6 @@ class EventController extends Controller
             ]);
 
             $movedEvent = $lockedEvent;
-            $eventId = $lockedEvent->id;
-            $newRoomId = (int) $room->id;
-
-            DB::afterCommit(function () use ($eventId, $oldRoom, $newRoomId, $reason, $transitionId, &$waResult): void {
-                try {
-                    $freshEvent = Event::with('requester')->find($eventId);
-                    $freshNewRoom = Room::with('pic')->find($newRoomId);
-                    if ($freshEvent && $freshNewRoom) {
-                        $waResult = app(WhatsAppService::class)->notifyRoomChanged(
-                            $freshEvent,
-                            $oldRoom,
-                            $freshNewRoom,
-                            $reason,
-                            null,
-                            $transitionId
-                        );
-                    }
-                } catch (\Throwable $exception) {
-                    Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pemindahan ruangan API selesai.', [
-                        'event_id' => $eventId,
-                        'transition_id' => $transitionId,
-                        'error' => $exception->getMessage(),
-                    ]);
-
-                    $waResult = [
-                        'status' => 'failed',
-                        'sent_count' => 0,
-                        'failed_count' => 1,
-                        'recipients_count' => 0,
-                        'transition_id' => $transitionId,
-                        'message' => 'Pengiriman notifikasi WhatsApp gagal dijalankan.',
-                    ];
-                }
-            });
         });
 
         if ($errorResponse !== null) {
@@ -745,32 +703,10 @@ class EventController extends Controller
 
         $event = ($movedEvent ?? Event::find($id))?->load(['room', 'requester']);
 
-        $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal telah dibuat.';
-        $waStatus = $waResult['status'] ?? null;
-
-        if ($waStatus === 'accepted') {
-            $apiMessage = 'Ruangan agenda berhasil dipindahkan, notifikasi internal dibuat, dan permintaan WhatsApp diterima antrean Meta Cloud API (accepted).';
-        } elseif ($waStatus === 'dry_run') {
-            $apiMessage = 'Ruangan agenda berhasil dipindahkan, notifikasi internal dibuat, dan simulasi dry-run WhatsApp dicatat tanpa pengiriman.';
-        } elseif ($waStatus === 'ambiguous_timeout') {
-            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun status WhatsApp timeout ambigu (ambiguous_timeout) dan memerlukan rekonsiliasi.';
-        } elseif ($waStatus === 'connection_failed') {
-            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun koneksi ke Meta Cloud API gagal sebelum request terkirim (connection_failed).';
-        } elseif ($waStatus === 'pending') {
-            $apiMessage = 'Ruangan agenda berhasil dipindahkan dan notifikasi internal dibuat, namun pembaruan status log WhatsApp ke database gagal (pending) dan memerlukan rekonsiliasi.';
-        }
-
         return response()->json([
             'success' => true,
-            'message' => $apiMessage,
+            'message' => 'Ruangan agenda berhasil dipindahkan.',
             'data' => $event,
-            'whatsapp_notification' => $waResult ? [
-                'status' => $waResult['status'],
-                'is_dry_run' => $waResult['is_dry_run'] ?? null,
-                'meta_message_id' => $waResult['meta_message_id'] ?? null,
-                'transition_id' => $waResult['transition_id'] ?? null,
-                'message' => $waResult['message'],
-            ] : null,
         ]);
     }
 

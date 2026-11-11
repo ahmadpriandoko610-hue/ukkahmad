@@ -35,24 +35,4 @@ return [
         ],
     ],
 
-    'whatsapp' => [
-        'enabled' => filter_var(env('WHATSAPP_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
-        'driver' => env('WHATSAPP_DRIVER', 'meta_cloud_api'),
-        'dry_run' => filter_var(env('WHATSAPP_DRY_RUN', true), FILTER_VALIDATE_BOOLEAN),
-        'require_consent' => filter_var(env('WHATSAPP_REQUIRE_CONSENT', true), FILTER_VALIDATE_BOOLEAN),
-        'test_allowlist_only' => filter_var(env('WHATSAPP_TEST_ALLOWLIST_ONLY', true), FILTER_VALIDATE_BOOLEAN),
-        'test_allowlist' => array_values(array_filter(array_map(
-            static fn (string $number): string => trim($number),
-            explode(',', (string) env('WHATSAPP_TEST_ALLOWLIST', ''))
-        ), static fn (string $number): bool => $number !== '')),
-        'graph_base_url' => rtrim((string) env('WHATSAPP_GRAPH_BASE_URL', 'https://graph.facebook.com'), '/'),
-        'graph_version' => trim((string) env('WHATSAPP_GRAPH_VERSION', 'v21.0'), '/'),
-        'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
-        'access_token' => env('WHATSAPP_ACCESS_TOKEN'),
-        'template_name' => env('WHATSAPP_TEMPLATE_NAME', 'notifikasi_pemindahan_ruangan'),
-        'template_language' => env('WHATSAPP_TEMPLATE_LANGUAGE', 'id'),
-        'connect_timeout' => max(1, (int) env('WHATSAPP_CONNECT_TIMEOUT', 5)),
-        'timeout' => max(2, (int) env('WHATSAPP_TIMEOUT', 10)),
-    ],
-
 ];
