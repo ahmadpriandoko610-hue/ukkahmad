@@ -71,7 +71,7 @@
                 @forelse($complaints as $complaint)
                     <tr>
                         <td>{{ $loop->iteration }}</td>
-                        <td>{{ $complaint->reported_at?->format('d-m-Y H:i') ?? '-' }}</td>
+                        <td>{{ $complaint->reported_at?->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d-m-Y H:i') ?? '-' }}</td>
                         <td>{{ $complaint->room?->room_name ?? '-' }}</td>
                         <td>{{ $complaint->reporter?->name ?? '-' }}</td>
                         <td>{{ $complaint->description }}</td>

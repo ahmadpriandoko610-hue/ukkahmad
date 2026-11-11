@@ -85,7 +85,7 @@
                         </span>
 
                         <span class="complaint-meta-pill">
-                            Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
+                            Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') : '-' }}
                         </span>
 
                         @if ($complaint->event)

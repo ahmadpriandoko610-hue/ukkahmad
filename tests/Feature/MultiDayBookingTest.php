@@ -73,200 +73,240 @@ class MultiDayBookingTest extends TestCase
 
     public function test_multiday_booking_defaults_end_date_to_start_date_when_empty(): void
     {
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Workshop 1 Hari',
-                'tanggal' => '2026-11-15',
-                'tanggal_selesai' => null,
-                'sesi_mulai' => 2,
-                'sesi_selesai' => 3,
-                'ruangan_id' => $this->room->id,
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
+
+        try {
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Workshop 1 Hari',
+                    'tanggal' => '2026-11-15',
+                    'tanggal_selesai' => null,
+                    'sesi_mulai' => 2,
+                    'sesi_selesai' => 3,
+                    'ruangan_id' => $this->room->id,
+                ]);
+
+            $response->assertSessionHas('success');
+
+            $this->assertDatabaseHas('events', [
+                'event_name' => 'Workshop 1 Hari',
+                'date' => '2026-11-15 00:00:00',
+                'end_date' => '2026-11-15 00:00:00',
             ]);
 
-        $response->assertSessionHas('success');
-
-        $this->assertDatabaseHas('events', [
-            'event_name' => 'Workshop 1 Hari',
-            'date' => '2026-11-15 00:00:00',
-            'end_date' => '2026-11-15 00:00:00',
-        ]);
-
-        $event = Event::where('event_name', 'Workshop 1 Hari')->first();
-        $this->assertEquals('15-11-2026', $event->formatted_date_range);
+            $event = Event::where('event_name', 'Workshop 1 Hari')->first();
+            $this->assertEquals('15-11-2026', $event->formatted_date_range);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_multiday_booking_rejects_end_date_before_start_date(): void
     {
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Agenda Invalid Tanggal',
-                'tanggal' => '2026-11-15',
-                'tanggal_selesai' => '2026-11-14',
-                'sesi_mulai' => 1,
-                'sesi_selesai' => 2,
-                'ruangan_id' => $this->room->id,
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
+
+        try {
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Agenda Invalid Tanggal',
+                    'tanggal' => '2026-11-15',
+                    'tanggal_selesai' => '2026-11-14',
+                    'sesi_mulai' => 1,
+                    'sesi_selesai' => 2,
+                    'ruangan_id' => $this->room->id,
+                ]);
+
+            $response->assertSessionHasErrors(['tanggal_selesai']);
+
+            $this->assertDatabaseMissing('events', [
+                'event_name' => 'Agenda Invalid Tanggal',
             ]);
-
-        $response->assertSessionHasErrors(['tanggal_selesai']);
-
-        $this->assertDatabaseMissing('events', [
-            'event_name' => 'Agenda Invalid Tanggal',
-        ]);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_conflict_detected_when_single_day_booking_overlaps_with_multiday_booking(): void
     {
-        // Multi-day booking from 10 to 14 Nov, sesi 1 to 4 (07:30 - 10:30)
-        Event::create([
-            'event_name' => 'Ujian Akhir Semester',
-            'date' => '2026-11-10',
-            'end_date' => '2026-11-14',
-            'start_time' => '07:30:00',
-            'end_time' => '10:30:00',
-            'requester_id' => $this->guru->id,
-            'room_id' => $this->room->id,
-            'status' => 'Disetujui',
-        ]);
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
 
-        // Attempt single-day booking inside range on 12 Nov, sesi 2 to 3 (08:15 - 09:45)
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Seminar Kilat',
-                'tanggal' => '2026-11-12',
-                'tanggal_selesai' => '2026-11-12',
-                'sesi_mulai' => 2,
-                'sesi_selesai' => 3,
-                'ruangan_id' => $this->room->id,
+        try {
+            // Multi-day booking from 10 to 14 Nov, sesi 1 to 4 (07:30 - 10:30)
+            Event::create([
+                'event_name' => 'Ujian Akhir Semester',
+                'date' => '2026-11-10',
+                'end_date' => '2026-11-14',
+                'start_time' => '07:30:00',
+                'end_time' => '10:30:00',
+                'requester_id' => $this->guru->id,
+                'room_id' => $this->room->id,
+                'status' => 'Disetujui',
             ]);
 
-        $response->assertSessionHasErrors(['ruangan_id']);
-        $this->assertDatabaseMissing('events', ['event_name' => 'Seminar Kilat']);
+            // Attempt single-day booking inside range on 12 Nov, sesi 2 to 3 (08:15 - 09:45)
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Seminar Kilat',
+                    'tanggal' => '2026-11-12',
+                    'tanggal_selesai' => '2026-11-12',
+                    'sesi_mulai' => 2,
+                    'sesi_selesai' => 3,
+                    'ruangan_id' => $this->room->id,
+                ]);
+
+            $response->assertSessionHasErrors(['ruangan_id']);
+            $this->assertDatabaseMissing('events', ['event_name' => 'Seminar Kilat']);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_conflict_detected_when_multiday_booking_overlaps_with_existing_event(): void
     {
-        // Existing event on 12 Nov, sesi 3 to 5 (09:00 - 11:15)
-        Event::create([
-            'event_name' => 'Rapat Pleno',
-            'date' => '2026-11-12',
-            'end_date' => '2026-11-12',
-            'start_time' => '09:00:00',
-            'end_time' => '11:15:00',
-            'requester_id' => $this->guru->id,
-            'room_id' => $this->room->id,
-            'status' => 'Disetujui',
-        ]);
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
 
-        // Attempt multi-day booking spanning 11 to 15 Nov, sesi 2 to 4 (08:15 - 10:30)
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Pameran Karya',
-                'tanggal' => '2026-11-11',
-                'tanggal_selesai' => '2026-11-15',
-                'sesi_mulai' => 2,
-                'sesi_selesai' => 4,
-                'ruangan_id' => $this->room->id,
+        try {
+            // Existing event on 12 Nov, sesi 3 to 5 (09:00 - 11:15)
+            Event::create([
+                'event_name' => 'Rapat Pleno',
+                'date' => '2026-11-12',
+                'end_date' => '2026-11-12',
+                'start_time' => '09:00:00',
+                'end_time' => '11:15:00',
+                'requester_id' => $this->guru->id,
+                'room_id' => $this->room->id,
+                'status' => 'Disetujui',
             ]);
 
-        $response->assertSessionHasErrors(['ruangan_id']);
-        $this->assertDatabaseMissing('events', ['event_name' => 'Pameran Karya']);
+            // Attempt multi-day booking spanning 11 to 15 Nov, sesi 2 to 4 (08:15 - 10:30)
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Pameran Karya',
+                    'tanggal' => '2026-11-11',
+                    'tanggal_selesai' => '2026-11-15',
+                    'sesi_mulai' => 2,
+                    'sesi_selesai' => 4,
+                    'ruangan_id' => $this->room->id,
+                ]);
+
+            $response->assertSessionHasErrors(['ruangan_id']);
+            $this->assertDatabaseMissing('events', ['event_name' => 'Pameran Karya']);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_non_conflicting_booking_allowed_different_time_during_multiday_dates(): void
     {
-        // Existing multi-day booking: 10 to 12 Nov, sesi 1 to 3 (07:30 - 09:45)
-        Event::create([
-            'event_name' => 'Sesi Pagi',
-            'date' => '2026-11-10',
-            'end_date' => '2026-11-12',
-            'start_time' => '07:30:00',
-            'end_time' => '09:45:00',
-            'requester_id' => $this->guru->id,
-            'room_id' => $this->room->id,
-            'status' => 'Disetujui',
-        ]);
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
 
-        // Attempt booking in later session: 11 Nov, sesi 6 to 8 (11:15 - 13:30)
-        $response = $this->actingAs($this->guru)
-            ->post(route('guru.events.store'), [
-                'judul' => 'Sesi Siang',
-                'tanggal' => '2026-11-11',
-                'tanggal_selesai' => '2026-11-11',
-                'sesi_mulai' => 6,
-                'sesi_selesai' => 8,
-                'ruangan_id' => $this->room->id,
+        try {
+            // Existing multi-day booking: 10 to 12 Nov, sesi 1 to 3 (07:30 - 09:45)
+            Event::create([
+                'event_name' => 'Sesi Pagi',
+                'date' => '2026-11-10',
+                'end_date' => '2026-11-12',
+                'start_time' => '07:30:00',
+                'end_time' => '09:45:00',
+                'requester_id' => $this->guru->id,
+                'room_id' => $this->room->id,
+                'status' => 'Disetujui',
             ]);
 
-        $response->assertSessionHas('success');
-        $this->assertDatabaseHas('events', ['event_name' => 'Sesi Siang']);
+            // Attempt booking in later session: 11 Nov, sesi 6 to 8 (11:15 - 13:30)
+            $response = $this->actingAs($this->guru)
+                ->post(route('guru.events.store'), [
+                    'judul' => 'Sesi Siang',
+                    'tanggal' => '2026-11-11',
+                    'tanggal_selesai' => '2026-11-11',
+                    'sesi_mulai' => 6,
+                    'sesi_selesai' => 8,
+                    'ruangan_id' => $this->room->id,
+                ]);
+
+            $response->assertSessionHas('success');
+            $this->assertDatabaseHas('events', ['event_name' => 'Sesi Siang']);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_admin_can_update_event_with_multiday_dates(): void
     {
-        $event = Event::create([
-            'event_name' => 'Pelatihan Awal',
-            'date' => '2026-11-20',
-            'end_date' => '2026-11-20',
-            'start_time' => '07:30:00',
-            'end_time' => '09:00:00',
-            'requester_id' => $this->guru->id,
-            'room_id' => $this->room->id,
-            'status' => 'Disetujui',
-        ]);
+        Carbon::setTestNow(Carbon::parse('2026-11-08 10:00:00'));
 
-        $response = $this->actingAs($this->admin)
-            ->put(route('agenda.update', $event), [
-                'judul' => 'Pelatihan Lanjutan 3 Hari',
-                'tanggal' => '2026-11-20',
-                'tanggal_selesai' => '2026-11-22',
-                'sesi_mulai' => 1,
-                'sesi_selesai' => 2,
-                'ruangan_id' => $this->room->id,
-                'keterangan' => 'Diperpanjang 3 hari.',
+        try {
+            $event = Event::create([
+                'event_name' => 'Pelatihan Awal',
+                'date' => '2026-11-20',
+                'end_date' => '2026-11-20',
+                'start_time' => '07:30:00',
+                'end_time' => '09:00:00',
+                'requester_id' => $this->guru->id,
+                'room_id' => $this->room->id,
+                'status' => 'Disetujui',
             ]);
 
-        $response->assertSessionHas('success');
+            $response = $this->actingAs($this->admin)
+                ->put(route('agenda.update', $event), [
+                    'judul' => 'Pelatihan Lanjutan 3 Hari',
+                    'tanggal' => '2026-11-20',
+                    'tanggal_selesai' => '2026-11-22',
+                    'sesi_mulai' => 1,
+                    'sesi_selesai' => 2,
+                    'ruangan_id' => $this->room->id,
+                    'keterangan' => 'Diperpanjang 3 hari.',
+                ]);
 
-        $this->assertDatabaseHas('events', [
-            'id' => $event->id,
-            'event_name' => 'Pelatihan Lanjutan 3 Hari',
-            'date' => '2026-11-20 00:00:00',
-            'end_date' => '2026-11-22 00:00:00',
-        ]);
+            $response->assertSessionHas('success');
+
+            $this->assertDatabaseHas('events', [
+                'id' => $event->id,
+                'event_name' => 'Pelatihan Lanjutan 3 Hari',
+                'date' => '2026-11-20 00:00:00',
+                'end_date' => '2026-11-22 00:00:00',
+            ]);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_calendar_views_contain_date_range_for_multiday_events(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-11-01 10:00:00'));
 
-        Event::create([
-            'event_name' => 'Bazar Sekolah',
-            'date' => '2026-11-05',
-            'end_date' => '2026-11-07',
-            'start_time' => '07:30:00',
-            'end_time' => '10:30:00',
-            'requester_id' => $this->guru->id,
-            'room_id' => $this->room->id,
-            'status' => 'Disetujui',
-        ]);
+        try {
+            Event::create([
+                'event_name' => 'Bazar Sekolah',
+                'date' => '2026-11-05',
+                'end_date' => '2026-11-07',
+                'start_time' => '07:30:00',
+                'end_time' => '10:30:00',
+                'requester_id' => $this->guru->id,
+                'room_id' => $this->room->id,
+                'status' => 'Disetujui',
+            ]);
 
-        // Guru calendar
-        $responseGuru = $this->actingAs($this->guru)->get(route('guru.calendar'));
-        $responseGuru->assertOk();
-        $responseGuru->assertSee('2026-11-07');
-        $responseGuru->assertSee('Bazar Sekolah');
+            // Guru calendar
+            $responseGuru = $this->actingAs($this->guru)->get(route('guru.calendar'));
+            $responseGuru->assertOk();
+            $responseGuru->assertSee('2026-11-07');
+            $responseGuru->assertSee('Bazar Sekolah');
 
-        // PIC calendar
-        $responsePic = $this->actingAs($this->pic)->get(route('pic.calendar'));
-        $responsePic->assertOk();
-        $responsePic->assertSee('2026-11-07');
-        $responsePic->assertSee('Bazar Sekolah');
+            // PIC calendar
+            $responsePic = $this->actingAs($this->pic)->get(route('pic.calendar'));
+            $responsePic->assertOk();
+            $responsePic->assertSee('2026-11-07');
+            $responsePic->assertSee('Bazar Sekolah');
 
-        // Public calendar
-        $responsePublic = $this->get(route('calendar.public'));
-        $responsePublic->assertOk();
-        $responsePublic->assertSee('2026-11-07');
-        $responsePublic->assertSee('Bazar Sekolah');
+            // Public calendar
+            $responsePublic = $this->get(route('calendar.public'));
+            $responsePublic->assertOk();
+            $responsePublic->assertSee('2026-11-07');
+            $responsePublic->assertSee('Bazar Sekolah');
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_complaints_pagination_has_five_items_per_page_for_admin_guru_and_pic(): void

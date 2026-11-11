@@ -89,7 +89,7 @@
                         </span>
 
                         <span class="complaint-meta-pill">
-                            Waktu Lapor: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
+                            Waktu Lapor: {{ $complaint->reported_at ? $complaint->reported_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') : '-' }}
                         </span>
 
                         @if ($complaint->event)
@@ -136,7 +136,7 @@
 
                         @if ($complaint->repaired_at)
                             <span style="color: #16a34a;">
-                                <strong>Selesai pada:</strong> {{ $complaint->repaired_at->format('d M Y, H:i') }}
+                                <strong>Selesai pada:</strong> {{ $complaint->repaired_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') }}
                             </span>
                         @endif
                     </div>

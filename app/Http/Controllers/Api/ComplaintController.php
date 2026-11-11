@@ -166,7 +166,7 @@ class ComplaintController extends Controller
             'description' => $validated['description'],
             'status_repair' => 'Belum Diperbaiki',
             'handled_by' => null,
-            'reported_at' => now(),
+            'reported_at' => now(config('app.timezone', 'Asia/Jakarta')),
         ];
 
         if ($request->hasFile('photo')) {
@@ -234,7 +234,7 @@ class ComplaintController extends Controller
                 'status_repair' => $newStatus,
                 'repair_note' => $repairNote,
                 'repaired_at' => $newStatus === 'Sudah Diperbaiki'
-                    ? ($complaint->repaired_at ?? now())
+                    ? ($complaint->repaired_at ?? now(config('app.timezone', 'Asia/Jakarta')))
                     : null,
                 'handled_by' => $authUser->id,
             ]);
@@ -339,7 +339,7 @@ class ComplaintController extends Controller
 
         $rows = $complaints->values()->map(fn ($complaint, $index) => [
             $index + 1,
-            $complaint->reported_at?->format('d-m-Y H:i') ?? '-',
+            $complaint->reported_at?->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d-m-Y H:i') ?? '-',
             $complaint->room?->room_name ?? '-',
             $complaint->reporter?->name ?? '-',
             $complaint->description,

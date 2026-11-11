@@ -234,7 +234,7 @@
             <strong>Dilaporkan:</strong>
 
             {{ $complaint->reported_at
-                ? $complaint->reported_at->format('d-m-Y H:i')
+                ? $complaint->reported_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d-m-Y H:i')
                 : '-' }}
         </p>
 

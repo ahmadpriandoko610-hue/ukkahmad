@@ -10,6 +10,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -555,5 +556,197 @@ class UkkCoreFeatureTest extends TestCase
 
         $this->assertDatabaseCount('complaints', 0);
         $this->assertCount(0, Storage::disk('public')->allFiles('complaints'));
+    }
+
+    public function test_application_timezone_defaults_to_asia_jakarta(): void
+    {
+        $this->assertSame('Asia/Jakarta', config('app.timezone'));
+        $this->assertSame('Asia/Jakarta', date_default_timezone_get());
+    }
+
+    public function test_new_complaint_records_and_displays_waktu_lapor_in_asia_jakarta_without_double_conversion(): void
+    {
+        Storage::fake('public');
+        Carbon::setTestNow(Carbon::create(2026, 11, 11, 8, 49, 0, 'Asia/Jakarta'));
+
+        try {
+            $guru = User::factory()->create(['role' => 'guru']);
+            $pic = User::factory()->create(['role' => 'pic']);
+            $admin = User::factory()->create(['role' => 'admin']);
+            $room = Room::create([
+                'room_name' => 'Lab Komputer 1',
+                'location' => 'Gedung Utama',
+                'capacity' => 36,
+                'pic_id' => $pic->id,
+                'is_active' => true,
+            ]);
+
+            $response = $this->actingAs($guru)->post(route('complaints.store'), [
+                'room_id' => $room->id,
+                'description' => 'AC ruang lab mengeluarkan suara bising.',
+                'photo' => UploadedFile::fake()->image('ac-rusak.jpg'),
+            ]);
+
+            $response->assertRedirect(route('complaints.index'));
+            $response->assertSessionHas('success', 'Pengaduan kerusakan berhasil dikirim.');
+
+            $complaint = Complaint::firstOrFail();
+
+            $this->assertSame('2026-11-11 08:49:00', $complaint->getRawOriginal('reported_at'));
+            $this->assertSame('2026-11-11 08:49:00', $complaint->getRawOriginal('created_at'));
+            $this->assertSame('Asia/Jakarta', $complaint->reported_at->timezoneName);
+            $this->assertSame('11 Nov 2026, 08:49', $complaint->reported_at->format('d M Y, H:i'));
+
+            $this->actingAs($guru)
+                ->get(route('complaints.index'))
+                ->assertOk()
+                ->assertSeeText('Waktu Lapor: 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 01:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+
+            $this->actingAs($admin)
+                ->get(route('admin.complaints'))
+                ->assertOk()
+                ->assertSeeText('Dilaporkan: 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 01:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+
+            $this->actingAs($pic)
+                ->get(route('pic.complaints'))
+                ->assertOk()
+                ->assertSeeText('Dilaporkan: 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 01:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+
+            $this->actingAs($pic)
+                ->get(route('pic.complaints.edit', $complaint))
+                ->assertOk()
+                ->assertSeeText('Dilaporkan 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 01:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+
+            $this->actingAs($pic)
+                ->get(route('pic.complaints.report', ['periode' => 'harian', 'tanggal' => '2026-11-11']))
+                ->assertOk()
+                ->assertSeeText('11-11-2026 08:49')
+                ->assertDontSeeText('11-11-2026 01:49')
+                ->assertDontSeeText('11-11-2026 15:49');
+
+            $this->actingAs($pic)
+                ->put(route('pic.complaints.update', $complaint), [
+                    'status_repair' => 'Sudah Diperbaiki',
+                    'repair_note' => 'Unit AC sudah dibersihkan dan diperbaiki.',
+                ])
+                ->assertRedirect(route('pic.complaints'));
+
+            $complaint->refresh();
+            $this->assertSame('2026-11-11 08:49:00', $complaint->getRawOriginal('repaired_at'));
+
+            $this->actingAs($guru)
+                ->get(route('complaints.index'))
+                ->assertOk()
+                ->assertSeeText('Selesai pada: 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_utc_test_clock_converts_once_to_wib_when_storing_complaint(): void
+    {
+        Storage::fake('public');
+        // 01:49 UTC equals 08:49 Asia/Jakarta (WIB)
+        Carbon::setTestNow(Carbon::create(2026, 11, 11, 1, 49, 0, 'UTC'));
+
+        try {
+            $guru = User::factory()->create(['role' => 'guru']);
+            $pic = User::factory()->create(['role' => 'pic']);
+            $room = Room::create([
+                'room_name' => 'Ruang Studio',
+                'location' => 'Lantai 2',
+                'capacity' => 25,
+                'pic_id' => $pic->id,
+                'is_active' => true,
+            ]);
+
+            $this->actingAs($guru)
+                ->post(route('complaints.store'), [
+                    'room_id' => $room->id,
+                    'description' => 'Lampu studio berkedip.',
+                    'photo' => UploadedFile::fake()->image('lampu.png'),
+                ])
+                ->assertRedirect(route('complaints.index'));
+
+            $complaint = Complaint::firstOrFail();
+
+            $this->assertSame('2026-11-11 08:49:00', $complaint->getRawOriginal('reported_at'));
+
+            $this->actingAs($guru)
+                ->get(route('complaints.index'))
+                ->assertOk()
+                ->assertSeeText('Waktu Lapor: 11 Nov 2026, 08:49')
+                ->assertDontSeeText('11 Nov 2026, 01:49')
+                ->assertDontSeeText('11 Nov 2026, 15:49');
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_existing_old_complaint_timestamp_is_preserved_without_unexpected_shift(): void
+    {
+        Carbon::setTestNow(Carbon::create(2026, 11, 11, 8, 49, 0, 'Asia/Jakarta'));
+
+        try {
+            $guru = User::factory()->create(['role' => 'guru']);
+            $pic = User::factory()->create(['role' => 'pic']);
+            $admin = User::factory()->create(['role' => 'admin']);
+            $room = Room::create([
+                'room_name' => 'Ruang Teori 3',
+                'location' => 'Gedung B',
+                'capacity' => 36,
+                'pic_id' => $pic->id,
+                'is_active' => true,
+            ]);
+
+            $oldTimestamp = '2026-11-02 07:42:58';
+            $complaintId = DB::table('complaints')->insertGetId([
+                'room_id' => $room->id,
+                'reporter_id' => $guru->id,
+                'description' => 'Pengaduan lama sebelum pembaruan timezone.',
+                'status_repair' => 'Belum Diperbaiki',
+                'reported_at' => $oldTimestamp,
+                'created_at' => $oldTimestamp,
+                'updated_at' => $oldTimestamp,
+            ]);
+
+            $complaint = Complaint::findOrFail($complaintId);
+
+            // Timestamp mentah pada database tetap utuh dan tidak digeser +7 jam atau -7 jam
+            $this->assertSame($oldTimestamp, $complaint->getRawOriginal('reported_at'));
+            $this->assertSame('02 Nov 2026, 07:42', $complaint->reported_at->format('d M Y, H:i'));
+
+            $this->actingAs($guru)
+                ->get(route('complaints.index'))
+                ->assertOk()
+                ->assertSeeText('Waktu Lapor: 02 Nov 2026, 07:42')
+                ->assertDontSeeText('02 Nov 2026, 14:42')
+                ->assertDontSeeText('02 Nov 2026, 00:42');
+
+            $this->actingAs($admin)
+                ->get(route('admin.complaints'))
+                ->assertOk()
+                ->assertSeeText('Dilaporkan: 02 Nov 2026, 07:42')
+                ->assertDontSeeText('02 Nov 2026, 14:42')
+                ->assertDontSeeText('02 Nov 2026, 00:42');
+
+            $this->actingAs($pic)
+                ->get(route('pic.complaints'))
+                ->assertOk()
+                ->assertSeeText('Dilaporkan: 02 Nov 2026, 07:42')
+                ->assertDontSeeText('02 Nov 2026, 14:42')
+                ->assertDontSeeText('02 Nov 2026, 00:42');
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 }

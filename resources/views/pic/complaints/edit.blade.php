@@ -54,7 +54,7 @@
             <div>
                 <h2 class="detail-card-title">{{ $complaint->room?->room_name ?? 'Ruangan Tidak Ditemukan' }}</h2>
                 <p class="detail-card-subtitle">
-                    Lokasi: {{ $complaint->room?->location ?? '-' }} • Dilaporkan {{ $complaint->reported_at?->format('d M Y, H:i') ?? '-' }}
+                    Lokasi: {{ $complaint->room?->location ?? '-' }} • Dilaporkan {{ $complaint->reported_at?->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') ?? '-' }}
                 </p>
             </div>
 
@@ -95,7 +95,7 @@
 
             <div class="detail-item">
                 <span class="detail-label">Waktu Selesai Perbaikan</span>
-                <strong class="detail-value">{{ $complaint->repaired_at?->format('d M Y, H:i') ?? '-' }}</strong>
+                <strong class="detail-value">{{ $complaint->repaired_at?->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') ?? '-' }}</strong>
             </div>
         </div>
 

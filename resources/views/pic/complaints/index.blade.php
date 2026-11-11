@@ -93,7 +93,7 @@
                         </span>
 
                         <span class="complaint-meta-pill">
-                            Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->format('d M Y, H:i') : '-' }}
+                            Dilaporkan: {{ $complaint->reported_at ? $complaint->reported_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') : '-' }}
                         </span>
 
                         @if ($complaint->event)
@@ -180,7 +180,7 @@
                     </span>
                     @if ($complaint->repaired_at)
                         <span style="font-size: 12px; color: #16a34a; font-weight: 500; display: block; margin-bottom: 8px;">
-                            Ditandai selesai pada: {{ $complaint->repaired_at->format('d M Y, H:i') }}
+                            Ditandai selesai pada: {{ $complaint->repaired_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') }}
                         </span>
                     @endif
                     <a href="{{ route('pic.complaints.edit', $complaint->id) }}" class="btn btn-edit" style="font-size: 12.5px;">
