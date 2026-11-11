@@ -33,6 +33,12 @@
 </div>
 @endif
 
+@if(session('error'))
+<div class="alert-danger">
+    {{ session('error') }}
+</div>
+@endif
+
 <div class="page-action-bar">
     <a href="{{ route('users.create') }}"
        class="btn-login page-primary-btn">
@@ -85,7 +91,16 @@
             <td>{{ $users->firstItem() + $loop->index }}</td>
             <td>{{ $user->name }}</td>
             <td>{{ $user->email }}</td>
-            <td>{{ $user->role_label }}</td>
+            <td>
+                {{ $user->role_label }}
+                @if($user->rooms->isNotEmpty())
+                    <div>
+                        <small style="color: #64748b;">
+                            PJ Ruangan: {{ $user->rooms->pluck('room_name')->implode(', ') }}
+                        </small>
+                    </div>
+                @endif
+            </td>
 
             <td class="room-actions-cell">
 

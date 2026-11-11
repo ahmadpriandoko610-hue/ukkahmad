@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Api\AuthController as ApiAuthController;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
@@ -14,9 +16,14 @@ class UserController extends Controller
 {
     $keyword = $request->keyword;
 
-    $users = User::when($keyword, function ($query) use ($keyword) {
-        $query->where('name', 'like', "%{$keyword}%")
-              ->orWhere('email', 'like', "%{$keyword}%");
+    $users = User::with([
+        'rooms' => fn ($query) => $query->select('id', 'pic_id', 'room_name')->orderBy('room_name'),
+    ])
+    ->when($keyword, function ($query) use ($keyword) {
+        $query->where(function ($subQuery) use ($keyword) {
+            $subQuery->where('name', 'like', "%{$keyword}%")
+                     ->orWhere('email', 'like', "%{$keyword}%");
+        });
     })
     ->orderBy('name')
     ->paginate(10);
@@ -74,6 +81,10 @@ class UserController extends Controller
      */
     public function edit(User $user)
     {
+        $user->loadMissing([
+            'rooms' => fn ($query) => $query->select('id', 'pic_id', 'room_name')->orderBy('room_name'),
+        ]);
+
         return view('admin.users.edit', compact('user'));
     }
 
@@ -90,6 +101,20 @@ class UserController extends Controller
             'role' => 'required|in:admin,pic,guru,siswa',
             'phone' => $isPic ? 'nullable|string|max:20' : 'nullable',
         ]);
+
+        $assignedRooms = $user->rooms()
+            ->orderBy('room_name')
+            ->pluck('room_name');
+
+        if ($assignedRooms->isNotEmpty() && !$isPic) {
+            $roomList = $assignedRooms->implode(', ');
+
+            return back()
+                ->withInput()
+                ->withErrors([
+                    'role' => "Role PIC tidak dapat diubah karena masih memiliki tanggung jawab ruangan ({$roomList}). Silakan ubah atau lepaskan penanggung jawab ruangan terlebih dahulu.",
+                ]);
+        }
 
         $rawPhone = trim((string) $request->phone);
         $phone = ($isPic && $rawPhone !== '') ? $rawPhone : null;
@@ -116,7 +141,39 @@ class UserController extends Controller
      */
    public function destroy(User $user)
 {
-    $user->delete();
+    $blockedRooms = DB::transaction(function () use ($user) {
+        $lockedUser = User::whereKey($user->id)->lockForUpdate()->first();
+        if (!$lockedUser) {
+            return collect();
+        }
+
+        $assignedRooms = $lockedUser->rooms()
+            ->lockForUpdate()
+            ->orderBy('room_name')
+            ->pluck('room_name');
+
+        if ($assignedRooms->isNotEmpty()) {
+            return $assignedRooms;
+        }
+
+        $lockedUser->delete();
+
+        return collect();
+    });
+
+    if ($blockedRooms->isNotEmpty()) {
+        $roomList = $blockedRooms->implode(', ');
+        $subject = $user->role === 'pic' ? 'PIC' : 'User';
+
+        return redirect()
+            ->route('users.index')
+            ->with(
+                'error',
+                "{$subject} tidak dapat dihapus karena masih memiliki tanggung jawab ruangan ({$roomList}). Silakan ubah atau lepaskan penanggung jawab ruangan terlebih dahulu."
+            );
+    }
+
+    ApiAuthController::revokeAllTokensForUser($user->id);
 
     return redirect()->route('users.index')
                      ->with('success', 'User berhasil dihapus.');

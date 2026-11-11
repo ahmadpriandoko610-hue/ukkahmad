@@ -93,6 +93,11 @@
         @error('role')
             <small class="form-error">{{ $message }}</small>
         @enderror
+        @if($user->rooms->isNotEmpty())
+            <small>
+                User ini masih menjadi PIC untuk ruangan: {{ $user->rooms->pluck('room_name')->implode(', ') }}. Role tidak dapat diubah sebelum tanggung jawab ruangan dialihkan atau dilepaskan.
+            </small>
+        @endif
     </div>
 
     <div class="form-actions">
