@@ -534,14 +534,23 @@ class SevenRevisionsTest extends TestCase
                 'handled_by' => $this->picA->id,
             ]);
 
-            // Tampil pada daftar PIC, laporan PIC, dan halaman pelapor
+            // Tampil pada daftar PIC (tanpa Edit Perbaikan dan tanpa form Status/Simpan Perubahan saat Sudah Diperbaiki), laporan PIC (masih memiliki Edit Perbaikan), dan halaman pelapor
             $this->actingAs($this->picA)->get(route('pic.complaints'))
                 ->assertOk()
-                ->assertSeeText('Keterangan diperbarui: selang pembuangan AC sudah diganti baru.');
+                ->assertSeeText('Keterangan diperbarui: selang pembuangan AC sudah diganti baru.')
+                ->assertSeeText('Ditandai selesai pada:')
+                ->assertDontSeeText('Kelola status perbaikan fasilitas ini:')
+                ->assertDontSeeText('Simpan Perubahan')
+                ->assertDontSeeText('Edit Perbaikan')
+                ->assertDontSee('id="status_' . $complaint->id . '"', false)
+                ->assertDontSee('id="repair_note_' . $complaint->id . '"', false)
+                ->assertDontSee(route('pic.complaints.update', $complaint->id), false)
+                ->assertDontSee(route('pic.complaints.edit', $complaint), false);
 
             $this->actingAs($this->picA)->get(route('pic.complaints.report'))
                 ->assertOk()
-                ->assertSeeText('Keterangan diperbarui: selang pembuangan AC sudah diganti baru.');
+                ->assertSeeText('Keterangan diperbarui: selang pembuangan AC sudah diganti baru.')
+                ->assertSeeText('Edit Perbaikan');
 
             $this->actingAs($this->guru)->get(route('complaints.index'))
                 ->assertOk()
@@ -576,6 +585,50 @@ class SevenRevisionsTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function test_pic_complaints_page_hides_status_form_only_for_repaired_complaints(): void
+    {
+        $belum = Complaint::create([
+            'room_id' => $this->roomA->id,
+            'reporter_id' => $this->guru->id,
+            'description' => 'Kabel HDMI aula putus.',
+            'status_repair' => 'Belum Diperbaiki',
+            'reported_at' => now()->subMinutes(3),
+        ]);
+
+        $menunggu = Complaint::create([
+            'room_id' => $this->roomA->id,
+            'reporter_id' => $this->guru->id,
+            'description' => 'Stop kontak panggung longgar.',
+            'status_repair' => 'Menunggu Spare Part',
+            'reported_at' => now()->subMinutes(2),
+        ]);
+
+        $sudah = Complaint::create([
+            'room_id' => $this->roomA->id,
+            'reporter_id' => $this->guru->id,
+            'description' => 'Keramik pintu masuk pecah.',
+            'status_repair' => 'Sudah Diperbaiki',
+            'repair_note' => 'Keramik sudah diganti.',
+            'repaired_at' => now()->subMinute(),
+            'handled_by' => $this->picA->id,
+            'reported_at' => now()->subHour(),
+        ]);
+
+        $this->actingAs($this->picA)->get(route('pic.complaints'))
+            ->assertOk()
+            ->assertSeeText('Kelola status perbaikan fasilitas ini:')
+            ->assertSeeText('Simpan Perubahan')
+            ->assertSeeText('Ditandai selesai pada:')
+            ->assertSee('id="status_' . $belum->id . '"', false)
+            ->assertSee(route('pic.complaints.update', $belum->id), false)
+            ->assertSee('id="status_' . $menunggu->id . '"', false)
+            ->assertSee(route('pic.complaints.update', $menunggu->id), false)
+            ->assertDontSee('id="status_' . $sudah->id . '"', false)
+            ->assertDontSee('id="repair_note_' . $sudah->id . '"', false)
+            ->assertDontSee(route('pic.complaints.update', $sudah->id), false)
+            ->assertDontSeeText('Edit Perbaikan');
     }
 
     public function test_non_pic_and_other_room_pic_cannot_edit_complaints(): void

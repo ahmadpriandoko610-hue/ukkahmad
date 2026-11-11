@@ -173,55 +173,64 @@
             </div>
 
             {{-- BAWAH: TINDAKAN UPDATE STATUS PIC --}}
-            <div class="complaint-neat-footer" style="align-items: flex-start;">
-                <div style="flex: 1; min-width: 0;">
-                    <span style="font-size: 12.5px; color: #64748b; display: block; margin-bottom: 4px;">
-                        Kelola status perbaikan fasilitas ini:
-                    </span>
-                    @if ($complaint->repaired_at)
-                        <span style="font-size: 12px; color: #16a34a; font-weight: 500; display: block; margin-bottom: 8px;">
-                            Ditandai selesai pada: {{ $complaint->repaired_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') }}
+            @if ($complaint->status_repair !== 'Sudah Diperbaiki')
+                <div class="complaint-neat-footer" style="align-items: flex-start;">
+                    <div style="flex: 1; min-width: 0;">
+                        <span style="font-size: 12.5px; color: #64748b; display: block; margin-bottom: 4px;">
+                            Kelola status perbaikan fasilitas ini:
                         </span>
-                    @endif
-                    <a href="{{ route('pic.complaints.edit', $complaint->id) }}" class="btn btn-edit" style="font-size: 12.5px;">
-                        Edit Perbaikan
-                    </a>
+                        @if ($complaint->repaired_at)
+                            <span style="font-size: 12px; color: #16a34a; font-weight: 500; display: block;">
+                                Ditandai selesai pada: {{ $complaint->repaired_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') }}
+                            </span>
+                        @endif
+                    </div>
+
+                    <form method="POST" action="{{ route('pic.complaints.update', $complaint->id) }}" class="complaint-pic-form" style="flex: 2; min-width: 0; width: 100%; justify-content: flex-end;">
+                        @csrf
+                        @method('PUT')
+
+                        <div style="display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-end; flex-wrap: wrap;">
+                            <label for="status_{{ $complaint->id }}" style="font-size: 12.5px; font-weight: 600; color: #334155; margin: 0;">
+                                Status:
+                            </label>
+
+                            <select name="status_repair" id="status_{{ $complaint->id }}" class="complaint-pic-select" required onchange="toggleRepairNote(this, '{{ $complaint->id }}')">
+                                <option value="Belum Diperbaiki" {{ $complaint->status_repair === 'Belum Diperbaiki' ? 'selected' : '' }}>
+                                    Belum Diperbaiki
+                                </option>
+                                <option value="Menunggu Spare Part" {{ $complaint->status_repair === 'Menunggu Spare Part' ? 'selected' : '' }}>
+                                    Menunggu Spare Part
+                                </option>
+                                <option value="Sudah Diperbaiki" {{ $complaint->status_repair === 'Sudah Diperbaiki' ? 'selected' : '' }}>
+                                    Sudah Diperbaiki
+                                </option>
+                            </select>
+
+                            <button type="submit" class="complaint-pic-btn">
+                                Simpan Perubahan
+                            </button>
+                        </div>
+
+                        <div id="repair_note_group_{{ $complaint->id }}" style="{{ old('status_repair') === 'Sudah Diperbaiki' ? 'display: block;' : 'display: none;' }} width: 100%; margin-top: 8px;">
+                            <label for="repair_note_{{ $complaint->id }}" style="display: block; font-size: 12px; font-weight: 600; color: #166534; margin-bottom: 4px;">
+                                Keterangan Perbaikan:
+                            </label>
+                            <input type="text" name="repair_note" id="repair_note_{{ $complaint->id }}" class="complaint-pic-select" style="width: 100%; box-sizing: border-box;" placeholder="Tambahkan keterangan perbaikan (contoh: Kabel proyektor telah diganti baru)..." value="{{ old('repair_note', $complaint->repair_note) }}">
+                        </div>
+                    </form>
                 </div>
-
-                <form method="POST" action="{{ route('pic.complaints.update', $complaint->id) }}" class="complaint-pic-form" style="flex: 2; min-width: 0; width: 100%; justify-content: flex-end;">
-                    @csrf
-                    @method('PUT')
-
-                    <div style="display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-end; flex-wrap: wrap;">
-                        <label for="status_{{ $complaint->id }}" style="font-size: 12.5px; font-weight: 600; color: #334155; margin: 0;">
-                            Status:
-                        </label>
-
-                        <select name="status_repair" id="status_{{ $complaint->id }}" class="complaint-pic-select" required onchange="toggleRepairNote(this, '{{ $complaint->id }}')">
-                            <option value="Belum Diperbaiki" {{ $complaint->status_repair === 'Belum Diperbaiki' ? 'selected' : '' }}>
-                                Belum Diperbaiki
-                            </option>
-                            <option value="Menunggu Spare Part" {{ $complaint->status_repair === 'Menunggu Spare Part' ? 'selected' : '' }}>
-                                Menunggu Spare Part
-                            </option>
-                            <option value="Sudah Diperbaiki" {{ $complaint->status_repair === 'Sudah Diperbaiki' ? 'selected' : '' }}>
-                                Sudah Diperbaiki
-                            </option>
-                        </select>
-
-                        <button type="submit" class="complaint-pic-btn">
-                            Simpan Perubahan
-                        </button>
-                    </div>
-
-                    <div id="repair_note_group_{{ $complaint->id }}" style="{{ $complaint->status_repair === 'Sudah Diperbaiki' ? 'display: block;' : 'display: none;' }} width: 100%; margin-top: 8px;">
-                        <label for="repair_note_{{ $complaint->id }}" style="display: block; font-size: 12px; font-weight: 600; color: #166534; margin-bottom: 4px;">
-                            Keterangan Perbaikan:
-                        </label>
-                        <input type="text" name="repair_note" id="repair_note_{{ $complaint->id }}" class="complaint-pic-select" style="width: 100%; box-sizing: border-box;" placeholder="Tambahkan keterangan perbaikan (contoh: Kabel proyektor telah diganti baru)..." value="{{ old('repair_note', $complaint->repair_note) }}">
-                    </div>
-                </form>
-            </div>
+            @else
+                <div class="complaint-neat-footer">
+                    <span style="font-size: 12px; color: #16a34a; font-weight: 500;">
+                        @if ($complaint->repaired_at)
+                            Ditandai selesai pada: {{ $complaint->repaired_at->copy()->timezone(config('app.timezone', 'Asia/Jakarta'))->format('d M Y, H:i') }}
+                        @else
+                            Fasilitas ini telah selesai diperbaiki.
+                        @endif
+                    </span>
+                </div>
+            @endif
 
         </div>
     @empty
