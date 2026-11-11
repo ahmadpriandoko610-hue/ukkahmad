@@ -308,6 +308,8 @@ class SevenRevisionsTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
+            $this->guru->update(['phone' => '083333333333']);
+
             config([
                 'services.whatsapp.enabled' => true,
                 'services.whatsapp.endpoint' => 'https://wa-gateway.test/send',
@@ -316,6 +318,7 @@ class SevenRevisionsTest extends TestCase
                 'services.whatsapp.token_prefix' => 'Bearer',
             ]);
 
+            Http::preventStrayRequests();
             Http::fake([
                 'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
             ]);
@@ -332,7 +335,7 @@ class SevenRevisionsTest extends TestCase
                 'approved_by' => $this->admin->id,
             ]);
 
-            // 1. Pindah ruangan via web memicu WA ke PIC ruangan lama & PIC ruangan baru (tanpa duplikasi)
+            // 1. Pindah ruangan via web memicu WA HANYA ke Guru pemilik agenda (PIC A & PIC B tidak dikirim)
             $moveResponse = $this->actingAs($this->admin)->put(route('events.move', $event), [
                 'room_id' => $this->roomB->id,
                 'move_reason' => 'Aula dipakai upacara dadakan',
@@ -347,17 +350,21 @@ class SevenRevisionsTest extends TestCase
                 'move_reason' => 'Aula dipakai upacara dadakan',
             ]);
 
-            Http::assertSentCount(2);
+            Http::assertSentCount(1);
             Http::assertSent(function ($request) {
                 $data = $request->data();
+                $message = (string) ($data['message'] ?? '');
 
                 return $request->url() === 'https://wa-gateway.test/send'
-                    && in_array($data['phone'] ?? '', ['6281111111111', '6282222222222'], true)
-                    && str_contains((string) ($data['message'] ?? ''), 'Rapat OSIS')
-                    && str_contains((string) ($data['message'] ?? ''), '12 November 2026')
-                    && str_contains((string) ($data['message'] ?? ''), 'Aula Utama')
-                    && str_contains((string) ($data['message'] ?? ''), 'LAB 1');
+                    && ($data['phone'] ?? '') === '6283333333333'
+                    && str_contains($message, 'Rapat OSIS')
+                    && str_contains($message, '12 November 2026')
+                    && str_contains($message, '08:15 - 09:45 WIB')
+                    && str_contains($message, 'Aula Utama')
+                    && str_contains($message, 'LAB 1')
+                    && str_contains($message, 'Aula dipakai upacara dadakan');
             });
+            Http::assertNotSent(fn ($request) => in_array($request->data()['phone'] ?? '', ['6281111111111', '6282222222222'], true));
 
             // 2. Edit agenda tanpa mengubah ruangan tidak mengirim WA lagi
             Http::fake();
@@ -374,7 +381,7 @@ class SevenRevisionsTest extends TestCase
             $noRoomChangeResponse->assertRedirect(route('agenda.index'));
             Http::assertNothingSent();
 
-            // 3. Pindah ruangan melalui API memicu WA
+            // 3. Pindah ruangan oleh Admin melalui API memicu WA ke Guru pemilik agenda
             Http::fake([
                 'https://wa-gateway.test/*' => Http::response(['status' => 'ok'], 200),
             ]);
@@ -389,7 +396,8 @@ class SevenRevisionsTest extends TestCase
                 ->assertJsonPath('success', true)
                 ->assertJsonPath('whatsapp_notification.status', 'sent');
 
-            Http::assertSentCount(2);
+            Http::assertSentCount(1);
+            Http::assertSent(fn ($request) => ($request->data()['phone'] ?? '') === '6283333333333');
 
             // 4. Gateway belum dikonfigurasi memberi warning jujur dan tidak mengklaim terkirim
             config([
@@ -416,6 +424,8 @@ class SevenRevisionsTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-11-10 08:00:00'));
 
         try {
+            $this->guru->update(['phone' => '083333333333']);
+
             config([
                 'services.whatsapp.enabled' => true,
                 'services.whatsapp.endpoint' => 'https://wa-gateway.test/send',
@@ -433,6 +443,8 @@ class SevenRevisionsTest extends TestCase
                 'status' => 'Disetujui',
                 'approved_by' => $this->admin->id,
             ]);
+
+            Http::preventStrayRequests();
 
             // Gateway mengembalikan HTTP 500
             Http::fake([

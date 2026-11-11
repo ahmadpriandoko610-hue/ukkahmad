@@ -11,6 +11,7 @@ use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
@@ -534,9 +535,6 @@ class EventController extends Controller
             ], 422);
         }
 
-        $oldRoomId = (int) $event->room_id;
-        $oldRoom = Room::with('pic')->find($oldRoomId);
-
         $event->update([
             'event_name' => $request->judul,
             'date' => $request->tanggal,
@@ -546,42 +544,13 @@ class EventController extends Controller
             'description' => $request->keterangan,
         ]);
 
-        $waResult = null;
-        if ($oldRoomId !== (int) $room->id) {
-            ScheduleNotification::create([
-                'user_id' => $event->requester_id,
-                'event_id' => $event->id,
-                'title' => 'Ruangan agenda dipindahkan',
-                'message' =>
-                    'Agenda "' . $event->event_name .
-                    '" dipindahkan dari "' . ($oldRoom?->room_name ?? 'ruangan sebelumnya') .
-                    '" ke "' . $room->room_name . '".',
-                'read_at' => null,
-            ]);
-
-            $waResult = app(WhatsAppService::class)->notifyRoomChanged(
-                $event->fresh(['requester', 'user', 'room.pic']),
-                $oldRoom,
-                $room->loadMissing('pic')
-            );
-        }
-
         $event->load(['room', 'requester']);
 
-        $responsePayload = [
+        return response()->json([
             'success' => true,
             'message' => 'Agenda berhasil diperbarui.',
             'data' => $event,
-        ];
-
-        if ($waResult !== null) {
-            $responsePayload['whatsapp_notification'] = [
-                'status' => $waResult['status'],
-                'message' => $waResult['message'],
-            ];
-        }
-
-        return response()->json($responsePayload);
+        ]);
     }
 
     // =========================
@@ -646,11 +615,14 @@ class EventController extends Controller
 
         $oldRoomId = (int) $event->room_id;
         $oldRoom = Room::with('pic')->find($oldRoomId);
+        $roomChanged = $oldRoomId !== (int) $room->id;
+        $reason = $request->alasan;
+        $waResult = null;
 
-        DB::transaction(function () use ($event, $request, $room): void {
+        DB::transaction(function () use ($event, $request, $room, $oldRoom, $roomChanged, $reason, &$waResult): void {
             $event->update([
                 'room_id' => $request->ruangan_id,
-                'move_reason' => $request->alasan,
+                'move_reason' => $reason,
             ]);
 
             ScheduleNotification::create([
@@ -660,20 +632,42 @@ class EventController extends Controller
                 'message' =>
                     'Agenda "' . $event->event_name .
                     '" dipindahkan ke ruangan "' . $room->room_name .
-                    '". Alasan: ' . $request->alasan,
+                    '". Alasan: ' . $reason,
                 'read_at' => null,
             ]);
-        });
 
-        $waResult = null;
-        if ($oldRoomId !== (int) $room->id) {
-            $waResult = app(WhatsAppService::class)->notifyRoomChanged(
-                $event->fresh(['requester', 'user', 'room.pic']),
-                $oldRoom,
-                $room->loadMissing('pic'),
-                $request->alasan
-            );
-        }
+            if (!$roomChanged) {
+                return;
+            }
+
+            $eventId = $event->id;
+            DB::afterCommit(function () use ($eventId, $oldRoom, $room, $reason, &$waResult): void {
+                try {
+                    $freshEvent = Event::with('requester')->find($eventId);
+                    if ($freshEvent) {
+                        $waResult = app(WhatsAppService::class)->notifyRoomChanged(
+                            $freshEvent,
+                            $oldRoom,
+                            $room->loadMissing('pic'),
+                            $reason
+                        );
+                    }
+                } catch (\Throwable $exception) {
+                    Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pemindahan ruangan API selesai.', [
+                        'event_id' => $eventId,
+                        'error' => $exception->getMessage(),
+                    ]);
+
+                    $waResult = [
+                        'status' => 'failed',
+                        'sent_count' => 0,
+                        'failed_count' => 1,
+                        'recipients_count' => 0,
+                        'message' => 'Pengiriman notifikasi WhatsApp gagal dijalankan.',
+                    ];
+                }
+            });
+        });
 
         $event->load(['room', 'requester']);
 

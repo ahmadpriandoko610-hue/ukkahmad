@@ -12,6 +12,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -434,21 +435,34 @@ class EventController extends Controller
          */
         $oldRoomId = (int) $event->room_id;
         $oldRoom = Room::with('pic')->find($oldRoomId);
+        $roomChanged = $oldRoomId !== (int) $room->id;
+        $waResult = null;
 
-        $event->update([
-            'event_name' => $request->judul,
-            'date' => $request->tanggal,
-            'end_date' => $endDate,
-            'start_time' => $startTime,
-            'end_time' => $endTime,
-            'room_id' => $request->ruangan_id,
-            'description' => $request->keterangan,
-        ]);
+        DB::transaction(function () use (
+            $event,
+            $request,
+            $endDate,
+            $startTime,
+            $endTime,
+            $room,
+            $oldRoom,
+            $roomChanged,
+            &$waResult
+        ): void {
+            $event->update([
+                'event_name' => $request->judul,
+                'date' => $request->tanggal,
+                'end_date' => $endDate,
+                'start_time' => $startTime,
+                'end_time' => $endTime,
+                'room_id' => $request->ruangan_id,
+                'description' => $request->keterangan,
+            ]);
 
-        $flashSuccess = 'Agenda berhasil diperbarui.';
-        $flashWarning = null;
+            if (!$roomChanged) {
+                return;
+            }
 
-        if ($oldRoomId !== (int) $room->id) {
             ScheduleNotification::create([
                 'user_id' => $event->requester_id,
                 'event_id' => $event->id,
@@ -462,15 +476,41 @@ class EventController extends Controller
                     $room->room_name . '.',
             ]);
 
-            $waResult = $this->whatsAppService->notifyRoomChanged(
-                $event->fresh(['requester', 'user', 'room.pic']),
-                $oldRoom,
-                $room->loadMissing('pic')
-            );
+            $eventId = $event->id;
+            DB::afterCommit(function () use ($eventId, $oldRoom, $room, &$waResult): void {
+                try {
+                    $freshEvent = Event::with('requester')->find($eventId);
+                    if ($freshEvent) {
+                        $waResult = $this->whatsAppService->notifyRoomChanged(
+                            $freshEvent,
+                            $oldRoom,
+                            $room->loadMissing('pic')
+                        );
+                    }
+                } catch (\Throwable $exception) {
+                    Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pembaruan agenda selesai.', [
+                        'event_id' => $eventId,
+                        'error' => $exception->getMessage(),
+                    ]);
 
+                    $waResult = [
+                        'status' => 'failed',
+                        'sent_count' => 0,
+                        'failed_count' => 1,
+                        'recipients_count' => 0,
+                        'message' => 'Pengiriman notifikasi WhatsApp gagal dijalankan.',
+                    ];
+                }
+            });
+        });
+
+        $flashSuccess = 'Agenda berhasil diperbarui.';
+        $flashWarning = null;
+
+        if ($roomChanged && $waResult !== null) {
             if ($waResult['status'] === 'sent') {
                 $flashSuccess = 'Agenda berhasil diperbarui dan notifikasi WhatsApp perubahan ruangan telah dikirim.';
-            } elseif ($waResult['status'] !== 'skipped_unchanged') {
+            } elseif (!in_array($waResult['status'], ['skipped_unchanged', 'skipped_non_guru'], true)) {
                 $flashWarning = 'Perubahan agenda tersimpan. ' . $waResult['message'];
             }
         }
@@ -1214,45 +1254,72 @@ public function picCalendar()
         $oldRoomId = (int) $event->room_id;
         $oldRoom = Room::with('pic')->find($oldRoomId);
         $oldRoomName = $oldRoom?->room_name ?? 'ruangan sebelumnya';
+        $moveReason = $request->move_reason;
+        $waResult = null;
 
         /**
          * =====================================================
-         * UPDATE RUANGAN
+         * UPDATE RUANGAN & NOTIFIKASI SECARA ATOMIK
          * =====================================================
          */
-        $event->update([
-            'room_id' => $room->id,
-            'move_reason' => $request->move_reason,
-        ]);
-
-        /**
-         * =====================================================
-         * BUAT NOTIFIKASI INTERNAL & WHATSAPP
-         * =====================================================
-         */
-        ScheduleNotification::create([
-            'user_id' => $event->requester_id,
-            'event_id' => $event->id,
-            'title' => 'Ruangan agenda dipindahkan',
-            'message' =>
-                'Agenda "' . $event->event_name . '" tanggal ' .
-                $event->formatted_date_range .
-                ' dipindahkan dari ' .
-                $oldRoomName .
-                ' ke ' .
-                $room->room_name .
-                '. Alasan: ' .
-                $request->move_reason,
-        ]);
-
-        $waResult = $this->whatsAppService->notifyRoomChanged(
-            $event->fresh(['requester', 'user', 'room.pic']),
+        DB::transaction(function () use (
+            $event,
+            $room,
             $oldRoom,
-            $room->loadMissing('pic'),
-            $request->move_reason
-        );
+            $oldRoomName,
+            $moveReason,
+            &$waResult
+        ): void {
+            $event->update([
+                'room_id' => $room->id,
+                'move_reason' => $moveReason,
+            ]);
 
-        $flashSuccess = $waResult['status'] === 'sent'
+            ScheduleNotification::create([
+                'user_id' => $event->requester_id,
+                'event_id' => $event->id,
+                'title' => 'Ruangan agenda dipindahkan',
+                'message' =>
+                    'Agenda "' . $event->event_name . '" tanggal ' .
+                    $event->formatted_date_range .
+                    ' dipindahkan dari ' .
+                    $oldRoomName .
+                    ' ke ' .
+                    $room->room_name .
+                    '. Alasan: ' .
+                    $moveReason,
+            ]);
+
+            $eventId = $event->id;
+            DB::afterCommit(function () use ($eventId, $oldRoom, $room, $moveReason, &$waResult): void {
+                try {
+                    $freshEvent = Event::with('requester')->find($eventId);
+                    if ($freshEvent) {
+                        $waResult = $this->whatsAppService->notifyRoomChanged(
+                            $freshEvent,
+                            $oldRoom,
+                            $room->loadMissing('pic'),
+                            $moveReason
+                        );
+                    }
+                } catch (\Throwable $exception) {
+                    Log::error('Gagal mengirim notifikasi WhatsApp setelah transaksi pemindahan ruangan selesai.', [
+                        'event_id' => $eventId,
+                        'error' => $exception->getMessage(),
+                    ]);
+
+                    $waResult = [
+                        'status' => 'failed',
+                        'sent_count' => 0,
+                        'failed_count' => 1,
+                        'recipients_count' => 0,
+                        'message' => 'Pengiriman notifikasi WhatsApp gagal dijalankan.',
+                    ];
+                }
+            });
+        });
+
+        $flashSuccess = ($waResult['status'] ?? null) === 'sent'
             ? 'Ruangan agenda berhasil dipindahkan dan notifikasi WhatsApp telah dikirim.'
             : 'Ruangan agenda berhasil dipindahkan dan notifikasi telah dibuat.';
 
@@ -1260,7 +1327,10 @@ public function picCalendar()
             ->route('agenda.index')
             ->with('success', $flashSuccess);
 
-        if ($waResult['status'] !== 'sent' && $waResult['status'] !== 'skipped_unchanged') {
+        if (
+            $waResult !== null &&
+            !in_array($waResult['status'], ['sent', 'skipped_unchanged', 'skipped_non_guru'], true)
+        ) {
             $redirect->with('warning', 'Perubahan ruangan tersimpan. ' . $waResult['message']);
         }
 
