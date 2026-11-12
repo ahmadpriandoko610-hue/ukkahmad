@@ -14,7 +14,7 @@
 
 ---
 
-## Tentang Aplikasi
+## Tentang Website
 
 **RAPI-Sekolah** dirancang untuk memudahkan koordinasi pemanfaatan ruangan dan pemeliharaan sarana sekolah antara **Admin**, **PIC (Penanggung Jawab Ruangan)**, **Guru / Organisasi**, **Siswa**, dan **Pengunjung Publik**:
 
